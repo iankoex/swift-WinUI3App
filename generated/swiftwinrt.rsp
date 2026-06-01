@@ -1,0 +1,21 @@
+-input C:\Users\ian\Developer\swift-WinUI3App\.nuget-packages\Microsoft.WindowsAppSDK.Foundation.2.0.21\metadata
+-input C:\Users\ian\Developer\swift-WinUI3App\.nuget-packages\Microsoft.WindowsAppSDK.WinUI.2.1.0\metadata
+-input C:\Users\ian\Developer\swift-WinUI3App\.nuget-packages\Microsoft.Web.WebView2.1.0.3967.48\lib\Microsoft.Web.WebView2.Core.winmd
+-input C:\Users\ian\Developer\swift-WinUI3App\.nuget-packages\Microsoft.Windows.SDK.Contracts.10.0.28000.1839
+-input C:\Users\ian\Developer\swift-WinUI3App\.nuget-packages\Microsoft.WindowsAppSDK.InteractiveExperiences.2.0.13\metadata\10.0.18362.0
+
+-input sdk+
+-output C:\Users\ian\Developer\swift-WinUI3App\generated
+
+-include Windows.Foundation
+-include Windows.Foundation.Collections
+-include Windows.Foundation.Numerics
+
+-include Microsoft.UI.Xaml
+-include Microsoft.UI.Xaml.Controls
+-include Microsoft.UI.Xaml.Markup
+-include Microsoft.UI.Xaml.XamlTypeInfo
+
+-exclude Windows.Foundation.PropertyValue
+
+-overwrite
