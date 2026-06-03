@@ -1,0 +1,2 @@
+# mark PowerShell scripts as vendored (excluded from language stats)
+scripts/** linguist-vendored

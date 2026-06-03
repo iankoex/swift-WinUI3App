@@ -10,14 +10,10 @@ open class SwiftApplication: Application, IXamlMetadataProvider {
         super.init()
         resourceManagerRequested.addHandler { _, eventArgs in
             guard let eventArgs = eventArgs else { return }
-            print("ResourceManagerRequested event fired")
-
             let priURL = Bundle.module.url(
                 forResource: "Microsoft.UI.Xaml.Controls", withExtension: "pri"
             )
             if let priURL {
-                print("Found PRI: \(priURL.path)")
-                print("Creating ResourceManager from: \(priURL.path)")
                 eventArgs.customResourceManager = ResourceManager(priURL.path)
             } else {
                 print("No PRI file found")

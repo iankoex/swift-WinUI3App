@@ -6,13 +6,13 @@ import PackageDescription
 let package = Package(
     name: "generated",
     products: [
-        .library(name: "CWinRT", targets: ["CWinRT"]),
-        .library(name: "WindowsFoundation", targets: ["WindowsFoundation"]),
-        .library(name: "UWP", targets: ["UWP"]),
-        .library(name: "WinAppSDK", targets: ["WinAppSDK"]),
-        .library(name: "WinUI", targets: ["WinUI"]),
-        .library(name: "SwiftWinUIApplication", targets: ["SwiftWinUIApplication"]),
-        .library(name: "WebView2Core", targets: ["WebView2Core"]),
+        .library(name: "CWinRT", type: .static, targets: ["CWinRT"]),
+        .library(name: "WindowsFoundation", type: .static, targets: ["WindowsFoundation"]),
+        .library(name: "UWP", type: .static, targets: ["UWP"]),
+        .library(name: "WinAppSDK", type: .static, targets: ["WinAppSDK"]),
+        .library(name: "WinUI", type: .static, targets: ["WinUI"]),
+        .library(name: "SwiftWinUIApplication", type: .static, targets: ["SwiftWinUIApplication"]),
+        .library(name: "WebView2Core", type: .static, targets: ["WebView2Core"]),
 
     ],
     targets: [

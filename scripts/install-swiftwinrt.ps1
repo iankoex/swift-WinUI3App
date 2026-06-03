@@ -55,7 +55,7 @@ function Invoke-VsDevShell
     {
         return $false
     }
-    $vsPath = & $vsWhere -latest -property installationPath
+    $vsPath = & $vsWhere -latest -products * -property installationPath
     if (-not $vsPath)
     {
         return $false
@@ -148,7 +148,7 @@ if (-not (Test-Command "cl.exe"))
             }
             Write-Host "Adding C++ development workload (this may take a while)..." -ForegroundColor DarkGray
             $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            $vsPath = & $vsWhere -latest -property installationPath
+    $vsPath = & $vsWhere -latest -products * -property installationPath
             $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
             if ($vsPath -and (Test-Path $setup))
             {
@@ -211,13 +211,24 @@ if ($LASTEXITCODE -ne 0)
 }
 Pop-Location
 
-# --- Patch for MSVC 19.51+ (await deprecation) ---
+# --- Patch for MSVC 19.51+ (await → await:strict) ---
 $CMakeLists = Join-Path $SourceDir "CMakeLists.txt"
-$PatchFlag = "add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)"
 $PatchContent = Get-Content $CMakeLists -Raw
-if ($PatchContent -notmatch [regex]::Escape($PatchFlag))
+$Fixes = @(
+    "add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)"
+    'string(REPLACE "/await " "/await:strict " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")'
+)
+$needsUpdate = $false
+foreach ($Flag in $Fixes)
 {
-    $PatchContent = $PatchContent -replace "(?<=project\(swiftwinrt[^)]*\))", "`n$PatchFlag"
+    if ($PatchContent -notmatch [regex]::Escape($Flag))
+    {
+        $PatchContent = $PatchContent -replace "(?<=project\(swiftwinrt[^)]*\))", "`n$Flag"
+        $needsUpdate = $true
+    }
+}
+if ($needsUpdate)
+{
     Set-Content -Path $CMakeLists -Value $PatchContent -NoNewline
     Write-Host "Patched CMakeLists.txt for MSVC 19.51+ compatibility" -ForegroundColor DarkGray
 }
