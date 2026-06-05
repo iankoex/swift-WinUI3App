@@ -33,6 +33,16 @@ if ($LASTEXITCODE -ne 0)
 }
 Write-Host ""
 
+# --- Step 4: Generate icon resource ---
+Write-Host "Step 4: Generating icon resource..." -ForegroundColor Cyan
+& "$PSScriptRoot\generate-icon-resource.ps1"
+if ($LASTEXITCODE -ne 0)
+{
+    Write-Host "Icon resource generation failed." -ForegroundColor Red
+    exit 1
+}
+Write-Host ""
+
 # --- Done ---
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Setup complete!" -ForegroundColor Green

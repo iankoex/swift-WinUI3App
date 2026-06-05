@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:res="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap res">
+
+  <Identity
+    Name="YourCompany.SwiftWinUI3App"
+    Publisher="CN=YourCompany"
+    Version="1.0.0.0" />
+
+  <Properties>
+    <DisplayName>Swift WinUI 3 Demo</DisplayName>
+    <PublisherDisplayName>YourCompany</PublisherDisplayName>
+    <Logo>Icons\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="App.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Swift WinUI 3 Demo"
+        Description="A Swift-on-Windows WinUI 3 desktop app"
+        BackgroundColor="transparent"
+        Square150x150Logo="Icons\Square150x150Logo.png"
+        Square44x44Logo="Icons\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Icons\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Icons\SplashScreen.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <res:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>

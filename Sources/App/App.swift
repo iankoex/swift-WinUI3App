@@ -3,6 +3,7 @@ import SwiftWinUIApplication
 import UWP
 import WinAppSDK
 import WinUI
+import WindowsFoundation
 
 @main
 final class App: SwiftApplication {
@@ -12,60 +13,45 @@ final class App: SwiftApplication {
 
         let root = StackPanel()
         root.spacing = 12
+        root.horizontalAlignment = .center
+        root.verticalAlignment = .center
         root.margin = Thickness(left: 24, top: 24, right: 24, bottom: 24)
 
-        let title = TextBlock()
-        title.text = "Welcome to Swift WinUI 3"
-        title.fontSize = 28
-        title.fontWeight = FontWeight(weight: 700)
-        root.children.append(title)
-
-        let subtitle = TextBlock()
-        subtitle.text = "Running on Windows App SDK"
-        subtitle.fontSize = 14
-        root.children.append(subtitle)
-
-        let infoBar = InfoBar()
-        infoBar.title = "Ready"
-        infoBar.message = "App initialized successfully"
-        infoBar.severity = .success
-        infoBar.isOpen = true
-        root.children.append(infoBar)
-
-        let button = Button()
-        button.content = "Click Me"
-        button.click.addHandler { _, _ in
-            print("Button clicked!")
+        // --- App logo ---
+        let logo = Image()
+        logo.width = 128
+        logo.height = 128
+        logo.horizontalAlignment = .center
+        if let pngUrl = Bundle.module.url(forResource: "Picture1", withExtension: "png") {
+            logo.source = BitmapImage(WindowsFoundation.Uri(pngUrl.absoluteString))
         }
-        root.children.append(button)
+        root.children.append(logo)
 
-        let slider = Slider()
-        slider.header = "Volume"
-        slider.minimum = 0
-        slider.maximum = 100
-        slider.value = 35
-        root.children.append(slider)
+        // --- Hello World with globe icon ---
+        let helloStack = StackPanel()
+        helloStack.orientation = .horizontal
+        helloStack.spacing = 8
+        helloStack.horizontalAlignment = .center
 
-        let toggle = ToggleSwitch()
-        toggle.header = "Switch"
-        toggle.isOn = false
-        root.children.append(toggle)
+        let hello = TextBlock()
+        hello.text = "Hello World"
+        hello.fontSize = 32
+        hello.verticalAlignment = .center
+        helloStack.children.append(hello)
 
-        let progress = ProgressBar()
-        progress.value = 65
-        progress.width = 200
-        root.children.append(progress)
+        let globe = FontIcon()
+        globe.glyph = "\u{E909}"
+        globe.fontSize = 32
+        helloStack.children.append(globe)
 
-        let scroll = ScrollViewer()
-        scroll.content = root
+        root.children.append(helloStack)
 
-        window.content = scroll
+        window.content = root
         try! window.activate()
 
-        _ = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            // if you can see this in the console
-            // then it means that the MainRunLoopTickler is working
-            print("Timer fired at \(Date())")
+        if let iconUrl = Bundle.module.url(forResource: "AppIcon", withExtension: "ico") {
+            try? window.appWindow.setTaskbarIcon(iconUrl.path)
+            try? window.appWindow.setIcon(iconUrl.path)
         }
     }
 }

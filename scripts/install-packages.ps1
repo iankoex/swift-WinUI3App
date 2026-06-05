@@ -453,19 +453,25 @@ function Install-WindowsAppRuntime
     }
 
     $Packages = $Packages | ForEach-Object {
-        $sdkVer = $_.Name -replace '^Microsoft\.WindowsAppRuntime\.', ''
-        if ($sdkVer -notmatch '\.')
-        { $sdkVer = "$sdkVer.0"
+        $name = $_.Name -replace '^Microsoft\.WindowsAppRuntime\.', ''
+        if ($name -match '^(\d+)$') {
+            $sdkVer = "$($matches[1]).0"
+        } elseif ($name -match '^(\d+\.\d+(?:\.\d+)?)') {
+            $sdkVer = $matches[1]
+        } else {
+            $sdkVer = "0.0"
         }
-        $_ | Add-Member -NotePropertyName SdkVersion -NotePropertyValue ([System.Version]$sdkVer) -PassThru
+        $isPreview = $name -match '-'
+        $_ | Add-Member -NotePropertyName SdkVersion -NotePropertyValue ([System.Version]$sdkVer) -PassThru |
+            Add-Member -NotePropertyName IsPreview -NotePropertyValue $isPreview -PassThru
     }
 
     Write-Host "Updating Windows App Runtime..." -ForegroundColor Cyan
-    $Packages | Sort-Object SdkVersion -Descending | ForEach-Object {
+    $Packages | Sort-Object -Property @{Expression='SdkVersion'; Descending=$true}, @{Expression='IsPreview'; Descending=$false} | ForEach-Object {
         Write-Host ("  " + $_.Name.PadRight(40) + "SDK " + $_.SdkVersion.ToString().PadRight(12) + "v" + $_.Version.ToString().PadRight(20) + $_.Architecture) -ForegroundColor DarkGray
     }
 
-    $Latest = $Packages | Sort-Object -Property SdkVersion -Descending | Select-Object -First 1
+    $Latest = $Packages | Sort-Object -Property @{Expression='SdkVersion'; Descending=$true}, @{Expression='IsPreview'; Descending=$false} | Select-Object -First 1
     Write-Host ("  " + "Selected: " + $Latest.Name + " (SDK " + $Latest.SdkVersion + ")") -ForegroundColor Green
 
     $SysDll = Get-ChildItem -Path $Latest.InstallLocation -Filter "Microsoft.WindowsAppRuntime.dll" -Recurse -File -ErrorAction SilentlyContinue |

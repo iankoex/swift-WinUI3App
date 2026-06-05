@@ -141,7 +141,7 @@ swift-WinUI3App/
 │       ├── WinAppSDK/
 │       └── SwiftWinUIApplication/
 ├── .swift-winrt/
-│   ├── bin/swiftwinrt.exe             # Compiled binder
+│   ├── bin/swiftwinrt.exe             # Compiled bindings generator
 │   └── source/                        # (optional) swift-winrt source
 ├── .nuget-packages/                   # Cached NuGet downloads
 ├── scripts/
@@ -149,7 +149,7 @@ swift-WinUI3App/
 │   ├── prerequisites.ps1              # Toolchain checks
 │   ├── install-packages.ps1           # NuGet + runtime setup
 │   ├── install-swiftwinrt.ps1         # Build swiftwinrt.exe from source
-│   └── generate-bindings.ps1          # Run the binder
+│   └── generate-bindings.ps1          # Generate the bindings
 ├── Package.swift                      # Root Swift package
 └── README.md
 ```

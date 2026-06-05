@@ -21,6 +21,13 @@ let package = Package(
                 .product(name: "WinAppSDK", package: "generated"),
                 .product(name: "SwiftWinUIApplication", package: "generated"),
             ],
+            resources: [
+                .process("../../Assets/Icons/AppIcon.ico"),
+                .process("../../Assets/Content/"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "Assets/Icons/AppIcon.res"])
+            ]
         ),
         .testTarget(
             name: "AppTests",
