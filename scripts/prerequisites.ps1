@@ -25,9 +25,11 @@ function Get-Version
 
 function Install-WithWinget
 {
-    param([string]$PackageId, [string]$DisplayName)
+    param([string]$PackageId, [string]$DisplayName, [string]$Source)
     Write-Host "  Installing $DisplayName via winget..." -ForegroundColor DarkGray
-    winget install --id $PackageId --exact --accept-source-agreements --accept-package-agreements
+    $args = @("install", "--id", $PackageId, "--exact", "--accept-source-agreements", "--accept-package-agreements")
+    if ($Source) { $args += @("--source", $Source) }
+    winget @args
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189)
     {
         Write-Host "  Failed to install $DisplayName. Install it manually." -ForegroundColor Red
@@ -43,74 +45,25 @@ function Refresh-Path
     $env:Path = "$machinePath;$userPath"
 }
 
-function Add-ToUserPath
-{
-    param([string]$NewPath)
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$NewPath*")
-    {
-        [Environment]::SetEnvironmentVariable("Path", "$userPath;$NewPath", "User")
-        Write-Host "  Added to user PATH: $NewPath" -ForegroundColor Green
-    }
-    if ($env:Path -notlike "*$NewPath*")
-    {
-        $env:Path += ";$NewPath"
-    }
-}
-
-function Invoke-VsDevShell
-{
-    $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path $vsWhere))
-    {
-        return $false
-    }
-    $vsPath = & $vsWhere -latest -products * -property installationPath
-    if (-not $vsPath)
-    {
-        return $false
-    }
-    $devShellModule = "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-    if (Test-Path $devShellModule)
-    {
-        Import-Module $devShellModule
-        $nativeArch = switch ($env:PROCESSOR_ARCHITECTURE)
-        {
-            "ARM64"
-            { "arm64"
-            }
-            "AMD64"
-            { "amd64"
-            }
-            "x86"
-            { "x86"
-            }
-            default
-            { "amd64"
-            }
-        }
-        & Microsoft.VisualStudio.DevShell\Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -Arch $nativeArch
-        return [bool](Get-Command "cl.exe" -ErrorAction SilentlyContinue)
-    }
-    return $false
-}
-
 function Write-Status
 {
     param([string]$Name, [string]$Version, [string]$Message)
-    $line = "  $Name".PadRight(32)
+    $line = ("  {0,-16}" -f $Name) + " "
     if ($Version)
     {
-        $line += $Version.PadRight(28)
+        $line += $Version
     } else
     {
-        $line += "NOT FOUND".PadRight(28)
+        $line += "NOT FOUND"
     }
-    $line += $Message
+    if ($Message)
+    {
+        $line += "  $Message"
+    }
     $color = if ($Version)
-    { 'Green' 
+    { 'Green'
     } else
-    { 'Yellow' 
+    { 'Yellow'
     }
     Write-Host $line -ForegroundColor $color
 }
@@ -230,44 +183,53 @@ if (-not $ninjaPath)
     Write-Status "ninja" $ninjaVersion
 }
 
-# --- NuGet ---
-$nugetPath = Get-CommandPath "nuget.exe"
-if (-not $nugetPath)
+# --- winapp CLI ---
+$winappPath = Get-CommandPath "winapp"
+if (-not $winappPath)
 {
-    $tmpNuget = Join-Path $env:TEMP "nuget.exe"
-    if (Test-Path $tmpNuget)
+    Write-Status "winapp"
+    $install = Read-Host "  Install winapp CLI via winget? (Y/N)"
+    if ($install -eq "Y" -or $install -eq "y")
     {
-        $nugetPath = $tmpNuget
-    }
-}
-if (-not $nugetPath)
-{
-    Write-Status "nuget.exe"
-    $download = Read-Host "  Download nuget.exe to TEMP? (Y/N)"
-    if ($download -eq "Y" -or $download -eq "y")
-    {
-        Write-Host "  Downloading nuget.exe..." -ForegroundColor DarkGray
-        $tmpNuget = Join-Path $env:TEMP "nuget.exe"
-        Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" -OutFile $tmpNuget
-        if (Test-Path $tmpNuget)
+        Install-WithWinget -PackageId "Microsoft.WinAppCli" -DisplayName "winapp CLI" -Source "winget"
+        Refresh-Path
+        $winappPath = Get-CommandPath "winapp"
+        if ($winappPath)
         {
-            $nugetPath = $tmpNuget
-            $nugetVersion = "v$((Get-Item $tmpNuget).VersionInfo.FileVersion)"
-            Write-Status "nuget.exe" $nugetVersion
+            $winappVersion = (Get-Version "winapp" "--version") -replace '^\s*v?(.+?)\s*$', '$1'
+            Write-Status "winapp" "v$winappVersion"
         } else
         {
-            Write-Status "nuget.exe" -Message "FAILED - Download manually."
+            Write-Status "winapp" -Message "FAILED - Install manually and re-run."
             $allSatisfied = $false
         }
     } else
     {
-        Write-Status "nuget.exe" -Message "SKIPPED - Required for restoring NuGet packages."
+        Write-Status "winapp" -Message "SKIPPED - Required to restore SDK packages and generate icons."
         $allSatisfied = $false
     }
 } else
 {
-    $nugetVersion = "v$((Get-Item $nugetPath).VersionInfo.FileVersion)"
-    Write-Status "nuget.exe" $nugetVersion
+    $winappVersion = (Get-Version "winapp" "--version") -replace '^\s*v?(.+?)\s*$', '$1'
+    Write-Status "winapp" "v$winappVersion"
+}
+
+# --- nuget ---
+$nugetPath = Get-CommandPath "nuget"
+if (-not $nugetPath)
+{
+    Write-Status "nuget"
+    Write-Host "  nuget.exe is required to restore packages for the development setup." -ForegroundColor Yellow
+    Write-Host "  Install manually from https://www.nuget.org/downloads (add the folder containing nuget.exe to PATH)" -ForegroundColor Yellow
+    Write-Host "  or run scripts\prerequisites.ps1's winapp step which will be needed for packaging anyway." -ForegroundColor DarkGray
+    $allSatisfied = $false
+} else
+{
+    # nuget 7.x dropped the "NuGet Version:" banner from `nuget help`, so we read
+    # the version from the executable's file metadata.
+    $nugetFileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($nugetPath).FileVersion
+    $nugetVersion = if ($nugetFileVersion) { "v$nugetFileVersion" } else { "INSTALLED" }
+    Write-Status "nuget" $nugetVersion
 }
 
 # --- Swift ---
@@ -290,73 +252,19 @@ if (-not $swiftPath)
     Write-Status "swift" $swiftVersion
 }
 
-# --- MSVC (cl.exe) & Developer Environment ---
+# --- MSVC (cl.exe) ---
+# Only required when building swift-winrt from source. The check is informational
+# here; install-swiftwinrt.ps1 will load the developer environment and prompt
+# to install MSVC if it's missing.
 $clPath = Get-CommandPath "cl.exe"
-$inDevEnv = [bool]($env:VCToolsInstallDir)
-
-if ($clPath -and $inDevEnv)
+if ($clPath)
 {
     $clVersion = (Get-Version "cl.exe") -split "`n" | Select-Object -First 1
     Write-Status "MSVC (cl.exe)" $clVersion
+    Write-Host "  (required only for building swift-winrt; loaded automatically when needed)" -ForegroundColor DarkGray
 } else
 {
-    if ($clPath)
-    {
-        Write-Status "MSVC (cl.exe)" "$((Get-Version "cl.exe") -split "`n" | Select-Object -First 1) (no dev environment)"
-    } else
-    {
-        Write-Status "MSVC (cl.exe)"
-    }
-
-    Write-Host "  Loading Visual Studio developer environment..." -ForegroundColor DarkGray
-    if (Invoke-VsDevShell)
-    {
-        $clPath = Get-CommandPath "cl.exe"
-        if ($clPath)
-        {
-            $clVersion = (Get-Version "cl.exe") -split "`n" | Select-Object -First 1
-            Write-Status "MSVC (cl.exe)" $clVersion
-            Write-Host "  (loaded VS developer environment into this session)" -ForegroundColor DarkGray
-        } else
-        {
-            Write-Host "  VS environment loaded but cl.exe still not found." -ForegroundColor Yellow
-            $allSatisfied = $false
-        }
-    } else
-    {
-        Write-Host "  Could not automatically load Visual Studio developer environment." -ForegroundColor Yellow
-        $install = Read-Host "  Install Visual Studio Build Tools with the required components? (Y/N)"
-        if ($install -eq "Y" -or $install -eq "y")
-        {
-            Write-Host "  Installing Visual Studio Build Tools..." -ForegroundColor DarkGray
-            winget install Microsoft.VisualStudio.BuildTools --exact --accept-source-agreements --accept-package-agreements
-            if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189)
-            {
-                Write-Host ""
-                Write-Host "  Visual Studio Build Tools installed." -ForegroundColor Green
-                Write-Host "  Now add the required individual components:" -ForegroundColor Cyan
-                Write-Host "  1. Open the Visual Studio Installer" -ForegroundColor White
-                Write-Host "  2. Find 'Visual Studio Build Tools' and click 'Modify'" -ForegroundColor White
-                Write-Host "  3. Go to the 'Individual components' tab" -ForegroundColor White
-                Write-Host "  4. Search for and select:" -ForegroundColor White
-                Write-Host "     - MSVC build tools for (ARM64 or x64) latest" -ForegroundColor DarkGray
-                Write-Host "     - Windows 10 SDK 10.0.26100.___" -ForegroundColor DarkGray
-                Write-Host "  5. Click 'Modify' in the bottom-right corner to install" -ForegroundColor White
-                Write-Host ""
-                Write-Host "  Once complete, re-run this script from a Developer PowerShell for VS 2022." -ForegroundColor Yellow
-                $allSatisfied = $false
-            } else
-            {
-                Write-Host "  Failed to install Visual Studio Build Tools." -ForegroundColor Red
-                Write-Host "  Download from: https://visualstudio.microsoft.com/" -ForegroundColor Yellow
-                $allSatisfied = $false
-            }
-        } else
-        {
-            Write-Status "MSVC (cl.exe)" -Message "SKIPPED - Required for building swift-winrt and the app."
-            $allSatisfied = $false
-        }
-    }
+    Write-Status "MSVC (cl.exe)" -Message "Will be required if you need to build swift-winrt"
 }
 
 Write-Host ""

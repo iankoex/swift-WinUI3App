@@ -22,11 +22,11 @@ let package = Package(
                 .product(name: "SwiftWinUIApplication", package: "generated"),
             ],
             resources: [
-                .process("../../Assets/Icons/AppIcon.ico"),
-                .process("../../Assets/Content/"),
+                .process("../../Platform/Assets/app.ico"),
+                .process("../../Platform/Content/"),
             ],
             linkerSettings: [
-                .unsafeFlags(["-Xlinker", "Assets/Icons/AppIcon.res"])
+                .unsafeFlags(["-Xlinker", "Platform/Assets/AppIcon.res"])
             ]
         ),
         .testTarget(

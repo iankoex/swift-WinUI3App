@@ -2,6 +2,7 @@ $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $InstallDir = Join-Path $ProjectRoot ".swift-winrt"
 $BinDir = Join-Path $InstallDir "bin"
 $SourceDir = Join-Path $InstallDir "source"
+$SwiftWinRTExe = Join-Path $BinDir "swiftwinrt.exe"
 
 function Add-ToUserPath
 {
@@ -87,14 +88,69 @@ function Invoke-VsDevShell
 
 # --- Main ---
 
+# Fast path: swiftwinrt.exe is already built. Nothing to do.
+if (Test-Path $SwiftWinRTExe)
+{
+    Write-Host "swiftwinrt.exe already present at $SwiftWinRTExe" -ForegroundColor Green
+    exit 0
+}
+
 Write-Host "Installing Swift/WinRT..." -ForegroundColor Cyan
 Write-Host ""
 
-if (-not (Test-Command "winget"))
+# From here on we need the VS developer environment for cl.exe / cmake.
+if (Test-Command "cl.exe")
 {
-    Write-Host "winget not found. Please ensure App Installer is installed from the Microsoft Store." -ForegroundColor Red
-    Write-Host "Alternatively, install Git, CMake, and Visual Studio 2022 manually, then re-run." -ForegroundColor Yellow
-    exit 1
+    Write-Host "Found C++ compiler (cl.exe)" -ForegroundColor DarkGray
+} else
+{
+    Write-Host "C++ compiler (cl.exe) not found - loading Visual Studio developer environment..." -ForegroundColor Cyan
+
+    if (-not (Invoke-VsDevShell))
+    {
+        $installVs = Read-Host "Visual Studio 2022 not found. Install it with C++ workload? (Y/N)"
+        if ($installVs -eq "Y" -or $installVs -eq "y")
+        {
+            Write-Host "Installing Visual Studio 2022 Community..." -ForegroundColor DarkGray
+            winget install --id Microsoft.VisualStudio.2022.Community --exact --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189)
+            {
+                Write-Host "Failed to install Visual Studio. Install it manually." -ForegroundColor Red
+                Write-Host "Download from: https://visualstudio.microsoft.com/" -ForegroundColor Yellow
+                exit 1
+            }
+            Write-Host "Adding C++ development workload (this may take a while)..." -ForegroundColor DarkGray
+            $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $vsPath = & $vsWhere -latest -products * -property installationPath
+            $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+            if ($vsPath -and (Test-Path $setup))
+            {
+                & $setup modify --installPath $vsPath --add Microsoft.VisualStudio.Workload.NativeDesktop --passive --norestart
+                if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010)
+                {
+                    Write-Host "Workload install may have failed. Try installing 'Desktop development with C++' manually." -ForegroundColor Yellow
+                }
+            }
+            if (Invoke-VsDevShell)
+            {
+                Write-Host "Loaded Visual Studio developer environment." -ForegroundColor Green
+            } else
+            {
+                Write-Host "Could not load the Visual Studio developer environment." -ForegroundColor Red
+                Write-Host "Open a Developer PowerShell for VS 2022 and run this script again." -ForegroundColor Yellow
+                exit 1
+            }
+        } else
+        {
+            Write-Host "Cannot build swift-winrt without a C++ compiler." -ForegroundColor Red
+            Write-Host "Install Visual Studio 2022 with the 'Desktop development with C++' workload." -ForegroundColor Yellow
+            Write-Host "Then run this script from a Developer PowerShell for VS 2022." -ForegroundColor Yellow
+            exit 1
+        }
+    } else
+    {
+        Write-Host "Loaded Visual Studio developer environment." -ForegroundColor Green
+    }
 }
 
 # --- Git ---
@@ -123,61 +179,6 @@ if (-not (Test-Command "cmake"))
 } else
 {
     Write-Host "Found cmake" -ForegroundColor DarkGray
-}
-
-# --- Compiler (cl.exe) ---
-if (-not (Test-Command "cl.exe"))
-{
-    Write-Host "C++ compiler (cl.exe) not found." -ForegroundColor Yellow
-
-    if (Invoke-VsDevShell)
-    {
-        Write-Host "Loaded Visual Studio developer environment." -ForegroundColor Green
-    } else
-    {
-        $installVs = Read-Host "Visual Studio 2022 not found. Install it with C++ workload? (Y/N)"
-        if ($installVs -eq "Y" -or $installVs -eq "y")
-        {
-            Write-Host "Installing Visual Studio 2022 Community..." -ForegroundColor DarkGray
-            winget install --id Microsoft.VisualStudio.2022.Community --exact --accept-source-agreements --accept-package-agreements
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189)
-            {
-                Write-Host "Failed to install Visual Studio. Install it manually." -ForegroundColor Red
-                Write-Host "Download from: https://visualstudio.microsoft.com/" -ForegroundColor Yellow
-                exit 1
-            }
-            Write-Host "Adding C++ development workload (this may take a while)..." -ForegroundColor DarkGray
-            $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    $vsPath = & $vsWhere -latest -products * -property installationPath
-            $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-            if ($vsPath -and (Test-Path $setup))
-            {
-                & $setup modify --installPath $vsPath --add Microsoft.VisualStudio.Workload.NativeDesktop --passive --norestart
-                if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010)
-                {
-                    Write-Host "Workload install may have failed. Try installing 'Desktop development with C++' manually." -ForegroundColor Yellow
-                }
-            }
-            if (Invoke-VsDevShell)
-            {
-                Write-Host "Loaded Visual Studio developer environment." -ForegroundColor Green
-            } else
-            {
-                Write-Host "Could not load the Visual Studio developer environment." -ForegroundColor Red
-                Write-Host "Open a Developer PowerShell for VS 2022 and run this script again." -ForegroundColor Yellow
-                exit 1
-            }
-        } else
-        {
-            Write-Host "Cannot build swift-winrt without a C++ compiler." -ForegroundColor Red
-            Write-Host "Install Visual Studio 2022 with the 'Desktop development with C++' workload." -ForegroundColor Yellow
-            Write-Host "Then run this script from a Developer PowerShell for VS 2022." -ForegroundColor Yellow
-            exit 1
-        }
-    }
-} else
-{
-    Write-Host "Found C++ compiler (cl.exe)" -ForegroundColor DarkGray
 }
 
 Write-Host ""
@@ -267,27 +268,12 @@ if (-not (Test-Path $BinDir))
 Copy-Item -Path $BinarySource -Destination $BinDir -Force
 Write-Host "Copied swiftwinrt.exe to $BinDir" -ForegroundColor Green
 
-# --- Add to user PATH (with prompt) ---
-$addToPath = Read-Host "Add .swift-winrt\bin to your user PATH? (Y/N)"
-if ($addToPath -eq "Y" -or $addToPath -eq "y")
-{
-    Add-ToUserPath -NewPath $BinDir
-}
-
-# --- Cleanup prompt ---
+# --- Cleanup: always remove the source folder to save space ---
 Write-Host ""
-$cleanup = Read-Host "Delete source folder to save space? ($SourceDir) (Y/N)"
-if ($cleanup -eq "Y" -or $cleanup -eq "y")
-{
-    Remove-Item -Path $SourceDir -Recurse -Force
-    Write-Host "Source folder deleted." -ForegroundColor DarkGray
-}
+Remove-Item -Path $SourceDir -Recurse -Force
+Write-Host "Source folder deleted." -ForegroundColor DarkGray
 
 # --- Summary ---
 Write-Host ""
 Write-Host "Swift/WinRT installed successfully." -ForegroundColor Green
 Write-Host "  Binary: $BinDir\swiftwinrt.exe" -ForegroundColor Cyan
-if ($addToPath -eq "Y" -or $addToPath -eq "y")
-{
-    Write-Host "  Added to PATH: $BinDir" -ForegroundColor Cyan
-}

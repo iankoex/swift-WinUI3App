@@ -1,28 +1,21 @@
 param(
     [ValidateSet("x64", "arm64", "x86")]
-    [string]$Arch
-)
-
-$RequiredDLLs = @(
-    "Microsoft.WindowsAppRuntime.Bootstrap.dll"
+    [string]$Arch,
+    [switch]$Latest
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
+$PlatformDir = Join-Path $ProjectRoot "Platform"
+$NugetCache = Join-Path $env:USERPROFILE ".nuget\packages"
 
-$PackageIds = @(
-    "Microsoft.WindowsAppSDK.Foundation",
-    "Microsoft.WindowsAppSDK.WinUI",
-    "Microsoft.Web.WebView2",
-    "Microsoft.Windows.SDK.Contracts",
-    "Microsoft.WindowsAppSDK.InteractiveExperiences"
-)
-
+# Mapping from package ID to the subpath inside the NuGet package that contains
+# the .winmd files swiftwinrt needs to project.
 $PackageInputPaths = @{
-    "Microsoft.WindowsAppSDK.Foundation" = "metadata"
-    "Microsoft.WindowsAppSDK.WinUI"      = "metadata"
-    "Microsoft.Web.WebView2"             = "lib\Microsoft.Web.WebView2.Core.winmd"
-    "Microsoft.Windows.SDK.Contracts"    = ""
-    "Microsoft.WindowsAppSDK.InteractiveExperiences" = "metadata\10.0.18362.0"
+    "Microsoft.WindowsAppSDK.Foundation"              = "metadata"
+    "Microsoft.WindowsAppSDK.WinUI"                   = "metadata"
+    "Microsoft.Web.WebView2"                          = "lib\Microsoft.Web.WebView2.Core.winmd"
+    "Microsoft.Windows.SDK.Contracts"                 = ""
+    "Microsoft.WindowsAppSDK.InteractiveExperiences"  = "metadata\10.0.18362.0"
 }
 
 function Resolve-Architecture
@@ -57,193 +50,101 @@ function Get-NuGetArch
     return "win-$TargetArch"
 }
 
-function Invoke-WithRetry
+function Get-CachedPackageVersion
 {
     param(
-        [scriptblock]$ScriptBlock,
-        [int]$MaxAttempts = 3,
-        [string]$Label = "operation"
+        [string]$PackageId,
+        [string]$PackagesDir
     )
-
-    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++)
+    $pkgRoot = Join-Path $PackagesDir $PackageId.ToLower()
+    if (-not (Test-Path $pkgRoot))
     {
-        try
-        {
-            return & $ScriptBlock
-        } catch
-        {
-            if ($attempt -lt $MaxAttempts)
-            {
-                $wait = [Math]::Pow(2, $attempt)
-                Write-Host "  $Label failed (attempt $attempt/$MaxAttempts), retrying in ${wait}s..." -ForegroundColor Yellow
-                Start-Sleep -Seconds $wait
-            } else
-            {
-                Write-Host "  $Label failed after $MaxAttempts attempts" -ForegroundColor Red
-                throw
-            }
-        }
+        return $null
     }
+    $latest = Get-ChildItem -LiteralPath $pkgRoot -Directory |
+        Where-Object { $_.Name -notmatch '-' } |
+        Sort-Object Name -Descending |
+        Select-Object -First 1
+    if (-not $latest)
+    {
+        return $null
+    }
+    return $latest.Name
 }
 
-function Get-LatestStableVersion
+function Parse-PackagesConfig
 {
-    param([string]$PackageId)
-    $url = "https://api.nuget.org/v3-flatcontainer/$($PackageId.ToLower())/index.json"
-    $json = Invoke-WithRetry -Label "Version lookup for $PackageId" -ScriptBlock {
-        Invoke-RestMethod -Uri $url -TimeoutSec 30 -ErrorAction Stop
-    }
-    if (-not $json.versions)
+    # Reads Platform/packages.config (standard NuGet XML) and returns a list of
+    # @{Name; Version} objects. If a version attribute is missing we treat it as
+    # $null so the caller can fall back to the latest available version.
+    param([string]$ConfigDir)
+
+    $ConfigPath = Join-Path $ConfigDir "packages.config"
+    if (-not (Test-Path $ConfigPath))
     {
-        throw "Unexpected response for $PackageId"
-    }
-    $stableVersions = $json.versions | Where-Object { $_ -notmatch '-' }
-    if (-not $stableVersions)
-    {
-        throw "$PackageId has no stable release"
-    }
-    return $stableVersions | Select-Object -Last 1
-}
-
-function Resolve-PackageVersions
-{
-    param([string[]]$PackageIds)
-
-    $jobs = @()
-    $jobMap = @{}
-
-    $i = 0
-    foreach ($packageId in $PackageIds)
-    {
-        if ($i -gt 0)
-        { Start-Sleep -Milliseconds 200
-        }
-        $i++
-        $job = Start-Job -Name $packageId -ScriptBlock {
-            param($id)
-            $url = "https://api.nuget.org/v3-flatcontainer/$($id.ToLower())/index.json"
-            $json = Invoke-RestMethod -Uri $url -TimeoutSec 100 -ErrorAction Stop
-            if (-not $json.versions)
-            { throw "Unexpected response for $id"
-            }
-            $stable = $json.versions | Where-Object { $_ -notmatch '-' }
-            if (-not $stable)
-            { throw "$id has no stable release"
-            }
-            return @{ PackageId = $id; Version = $stable | Select-Object -Last 1 }
-        } -ArgumentList $packageId
-        $jobs += $job
-        $jobMap[$job.Id] = $packageId
-    }
-
-    Write-Host "  Resolving $(@($PackageIds).Count) package versions in parallel..." -ForegroundColor DarkGray
-
-    $resolved = @{}
-    $failed = $false
-    $total = $jobs.Count
-    $completed = 0
-
-    while ($jobs.Count -gt 0)
-    {
-        $done = Wait-Job -Job $jobs -Any
-
-        foreach ($job in $done)
-        {
-            $completed++
-            Write-Progress -Activity "Resolving package versions" -Status "$completed of $total" -PercentComplete (($completed / $total) * 100)
-
-            $result = Receive-Job -Job $job
-            if ($job.State -eq "Failed")
-            {
-                $errorMsg = $job.ChildJobs[0].Error[0].Exception.Message
-                Write-Host "  Failed to resolve version for $($jobMap[$job.Id]): $errorMsg" -ForegroundColor Red
-                $failed = $true
-            } else
-            {
-                $resolved[$result.PackageId] = $result.Version
-                Write-Host "  $($result.PackageId) -> $($result.Version)" -ForegroundColor DarkGray
-            }
-            Remove-Job -Job $job
-            $jobs = $jobs | Where-Object { $_.Id -ne $job.Id }
-        }
-    }
-
-    Write-Progress -Activity "Resolving package versions" -Completed
-
-    if ($failed)
-    {
+        Write-Host "packages.config not found at $ConfigPath" -ForegroundColor Red
         exit 1
     }
 
-    return $resolved
+    [xml]$xml = Get-Content -LiteralPath $ConfigPath
+    $Packages = New-Object System.Collections.Generic.List[object]
+    foreach ($node in $xml.packages.package)
+    {
+        $id    = $node.id
+        $ver   = if ($node.version) { $node.version } else { $null }
+        if ($id)
+        {
+            $Packages.Add([PSCustomObject]@{ Name = $id; Version = $ver })
+        }
+    }
+    return , $Packages
 }
 
-function Restore-Packages
+function Invoke-NuGetRestore
 {
+    # Restores the packages listed in packages.config into the global NuGet cache
+    # via `nuget install`. This avoids the C++/WinRT header generation that
+    # `winapp restore` does, which a Swift project does not need.
     param(
-        [string]$PackagesDir,
-        [hashtable]$ResolvedPackages
+        [string]$ConfigDir,
+        [switch]$Latest
     )
 
-    $NugetPath = Join-Path $env:TEMP "nuget.exe"
-    if (-not (Test-Path $NugetPath))
+    $nugetCmd = Get-Command "nuget" -ErrorAction SilentlyContinue
+    if (-not $nugetCmd)
     {
-        Write-Host "  nuget.exe not found at $NugetPath" -ForegroundColor Red
-        Write-Host "  Run prerequisites.ps1 first or manually download nuget.exe to that path." -ForegroundColor Yellow
+        Write-Host "nuget.exe not found. Run scripts\prerequisites.ps1 to install it." -ForegroundColor Red
         exit 1
     }
 
-    if (-not (Test-Path $PackagesDir))
+    $Packages = Parse-PackagesConfig -ConfigDir $ConfigDir
+    if (-not $Packages -or $Packages.Count -eq 0)
     {
-        New-Item -ItemType Directory -Path $PackagesDir | Out-Null
-    }
-
-    # Filter out already-cached packages
-    $missingPackages = @{}
-    foreach ($entry in $ResolvedPackages.GetEnumerator())
-    {
-        $pkgDir = Join-Path $PackagesDir "$($entry.Key).$($entry.Value)"
-        if (Test-Path $pkgDir)
-        {
-            Write-Host "  $($entry.Key) $($entry.Value) (cached)" -ForegroundColor DarkGray
-        } else
-        {
-            $missingPackages[$entry.Key] = $entry.Value
-        }
-    }
-
-    if ($missingPackages.Count -eq 0)
-    {
-        Write-Host "  All packages are already cached" -ForegroundColor Green
+        Write-Host "No packages listed in packages.config" -ForegroundColor Yellow
         return
     }
 
-    $PackagesConfigContent = "<?xml version=""1.0"" encoding=""utf-8""?>`n"
-    $PackagesConfigContent += "<packages>`n"
-    foreach ($entry in $missingPackages.GetEnumerator())
+    foreach ($Pkg in $Packages)
     {
-        $PackagesConfigContent += "  <package id=""$($entry.Key)"" version=""$($entry.Value)"" />`n"
-    }
-    $PackagesConfigContent += "</packages>"
-
-    $PackagesConfigPath = Join-Path $PackagesDir "packages.config"
-    $PackagesConfigContent | Out-File -FilePath $PackagesConfigPath -Encoding ascii
-
-    $env:NUGET_DISABLE_VULNERABILITY_CHECK = '1'
-    & $NugetPath restore $PackagesConfigPath -PackagesDirectory $PackagesDir -Verbosity quiet
-    Remove-Item Env:\NUGET_DISABLE_VULNERABILITY_CHECK -ErrorAction SilentlyContinue
-    if ($LASTEXITCODE -ne 0)
-    {
-        Write-Host "  NuGet restore failed with error code $LASTEXITCODE" -ForegroundColor Red
-        exit 1
+        $args = @("install", $Pkg.Name, "-OutputDirectory", $NugetCache, "-DependencyVersion", "Ignore", "-NonInteractive")
+        if ($Pkg.Version -and -not $Latest)
+        {
+            $args += @("-Version", $Pkg.Version)
+        }
+        $versionLabel = if ($Latest) { " (latest)" } elseif ($Pkg.Version) { " $($Pkg.Version)" } else { "" }
+        Write-Host "  nuget install $($Pkg.Name)$versionLabel" -ForegroundColor DarkGray
+        & nuget @args | Out-Null
+        if ($LASTEXITCODE -ne 0)
+        {
+            Write-Host "  nuget install failed for $($Pkg.Name) (exit $LASTEXITCODE)" -ForegroundColor Red
+            exit 1
+        }
     }
 }
 
 function Copy-RequiredDLLs
 {
     param(
-        [string]$PackagesDir,
-        [hashtable]$ResolvedPackages,
         [string]$TargetArch
     )
 
@@ -253,40 +154,125 @@ function Copy-RequiredDLLs
         New-Item -ItemType Directory -Path $DestDir | Out-Null
     }
 
+    $Dlls = @(
+        "Microsoft.WindowsAppRuntime.Bootstrap.dll"
+    )
+
     $nugetArch = Get-NuGetArch -TargetArch $TargetArch
 
-    foreach ($entry in $ResolvedPackages.GetEnumerator())
+    # The bootstrap DLL ships inside the WindowsAppSDK.Foundation package (in
+    # runtimes\win-<arch>\native\). Search Foundation first, then Runtime, then
+    # the metapackage, since the home varies across WinAppSDK releases.
+    $PackageCandidates = @(
+        "Microsoft.WindowsAppSDK.Foundation",
+        "Microsoft.WindowsAppSDK.Runtime",
+        "Microsoft.WindowsAppSDK"
+    )
+
+    foreach ($DllName in $Dlls)
     {
-        $PackageId = $entry.Key
-        $Version = $entry.Value
-        $PackageDir = Join-Path $PackagesDir "$PackageId.$Version"
+        $src = $null
+        $srcDesc = $null
 
-        foreach ($DllName in $RequiredDLLs)
+        foreach ($PackageId in $PackageCandidates)
         {
-            $Found = Get-ChildItem -Path $PackageDir -Filter $DllName -Recurse -File |
-                Where-Object { $_.DirectoryName -match "$nugetArch\\native" } |
-                Select-Object -First 1
+            $Version = Get-CachedPackageVersion -PackageId $PackageId -PackagesDir $NugetCache
+            if (-not $Version) { continue }
+            $PkgDir = Join-Path $NugetCache "$($PackageId.ToLower())\$Version"
 
-            if ($Found)
+            $NativeDir = Find-PackageNativeDir -PackageDir $PkgDir -NugetArch $nugetArch
+            if ($NativeDir)
             {
-                Copy-Item -Path $Found.FullName -Destination $DestDir -Force
+                $candidate = Join-Path $NativeDir $DllName
+                if (Test-Path $candidate)
+                {
+                    $src = $candidate
+                    $srcDesc = "$PackageId (native folder)"
+                    break
+                }
             }
+
+            $found = Get-ChildItem -LiteralPath $PkgDir -Recurse -Filter $DllName -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.DirectoryName -like "*\$nugetArch*" } |
+                Select-Object -First 1
+            if ($found)
+            {
+                $src = $found.FullName
+                $srcDesc = "$PackageId (recursive search)"
+                break
+            }
+        }
+
+        # Last resort: the .winapp layout, in case `winapp restore` was run
+        # separately (e.g. by package.ps1).
+        if (-not $src)
+        {
+            foreach ($sub in @("packaged", ""))
+            {
+                $base = ".winapp\bin\$TargetArch"
+                if ($sub) { $base = "$base\$sub" }
+                $candidate = Join-Path $ProjectRoot "$base\$DllName"
+                if (Test-Path $candidate)
+                {
+                    $src = $candidate
+                    $srcDesc = ".winapp layout"
+                    break
+                }
+            }
+        }
+
+        if ($src)
+        {
+            Copy-Item -Path $src -Destination (Join-Path $DestDir $DllName) -Force
+            Write-Host "  $DllName <- $srcDesc" -ForegroundColor DarkGray
+        } else
+        {
+            Write-Host "  $DllName not found in any candidate package or .winapp\bin\$TargetArch" -ForegroundColor Yellow
+        }
+    }
+}
+
+function Find-PackageNativeDir
+{
+    # Locates the <arch>/native folder inside a NuGet package. Different WinAppSDK
+    # releases use different roots ("runtimes" vs "runtimes-framework"), so we
+    # probe the known candidates first and fall back to a recursive search.
+    param(
+        [string]$PackageDir,
+        [string]$NugetArch
+    )
+
+    if (-not (Test-Path $PackageDir))
+    {
+        return $null
+    }
+
+    $CandidateRoots = @("runtimes", "runtimes-framework", "runtimes-windowsapp", "native")
+    foreach ($Root in $CandidateRoots)
+    {
+        $Candidate = Join-Path $PackageDir "$Root\$NugetArch\native"
+        if (Test-Path $Candidate)
+        {
+            return $Candidate
         }
     }
 
-    $Copied = Get-ChildItem -Path $DestDir -Filter *.dll -File
-    foreach ($dll in $Copied)
+    $Match = Get-ChildItem -LiteralPath $PackageDir -Recurse -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "native" -and $_.Parent.Name -eq $NugetArch } |
+        Select-Object -First 1
+    if ($Match)
     {
-        Write-Host "  $($dll.Name)" -ForegroundColor DarkGray
+        return $Match.FullName
     }
+
+    return $null
 }
 
 function Copy-WinUIResources
 {
     param(
-        [string]$PackagesDir,
-        [hashtable]$ResolvedPackages,
-        [string]$TargetArch
+        [string]$TargetArch,
+        [string]$PackagesDir
     )
 
     $DestDir = Join-Path $ProjectRoot "generated\Resources"
@@ -295,70 +281,39 @@ function Copy-WinUIResources
         New-Item -ItemType Directory -Path $DestDir | Out-Null
     }
 
-    $WinUIPackageId = "Microsoft.WindowsAppSDK.WinUI"
-    $Version = $ResolvedPackages[$WinUIPackageId]
+    $Version = Get-CachedPackageVersion -PackageId "Microsoft.WindowsAppSDK.WinUI" -PackagesDir $PackagesDir
     if (-not $Version)
     {
-        Write-Host "WinUI package version not found in resolved packages." -ForegroundColor Yellow
+        Write-Host "Microsoft.WindowsAppSDK.WinUI not found in $PackagesDir" -ForegroundColor Yellow
         return
     }
 
     $nugetArch = Get-NuGetArch -TargetArch $TargetArch
-    $NativeDir = Join-Path $PackagesDir "$WinUIPackageId.$Version\runtimes-framework\$nugetArch\native"
-    if (-not (Test-Path $NativeDir))
+    $PackageDir = Join-Path $PackagesDir "microsoft.windowsappsdk.winui\$Version"
+    $NativeDir = Find-PackageNativeDir -PackageDir $PackageDir -NugetArch $nugetArch
+    if (-not $NativeDir)
     {
-        Write-Host "WinUI native runtime folder not found: $NativeDir" -ForegroundColor Yellow
+        Write-Host "WinUI native runtime folder not found under $PackageDir (arch: $nugetArch)" -ForegroundColor Yellow
         return
     }
 
-    $AssetFiles = @(
-        "Microsoft.UI.Xaml.Controls.pri"
-    )
-
-    foreach ($FileName in $AssetFiles)
+    foreach ($FileName in @("Microsoft.UI.Xaml.Controls.pri"))
     {
         $SourcePath = Join-Path $NativeDir $FileName
         if (Test-Path $SourcePath)
         {
             Copy-Item -Path $SourcePath -Destination $DestDir -Force
-            Write-Host "  Copied $FileName" -ForegroundColor DarkGray
+            Write-Host "  Copied $FileName from $NativeDir" -ForegroundColor DarkGray
         } else
         {
-            Write-Host "  Missing WinUI resource file: $FileName" -ForegroundColor Yellow
+            Write-Host "  Missing WinUI resource file: $FileName (searched $NativeDir)" -ForegroundColor Yellow
         }
     }
 }
 
-function Generate-VersionConstant
-{
-    param([string]$ProjectRoot)
-
-    $DllPath = Join-Path $ProjectRoot "generated\Resources\Microsoft.WindowsAppRuntime.Bootstrap.dll"
-    if (-not (Test-Path $DllPath))
-    {
-        Write-Host "  Bootstrap DLL not found at $DllPath, skipping" -ForegroundColor Yellow
-        return
-    }
-
-    $Version = (Get-Item $DllPath).VersionInfo.FileVersionRaw
-    $MajorMinor = "0x{0:X8}" -f (($Version.Major -shl 16) -bor $Version.Minor)
-
-    $Content = @"
-// Auto-generated from bootstrap DLL file version ($($Version.Major).$($Version.Minor).$($Version.Build).$($Version.Revision))
-internal let WINDOWSAPPSDK_RELEASE_MAJORMINOR: UInt32 = $MajorMinor
-"@
-
-    $OutPath = Join-Path $ProjectRoot "generated\Sources\SwiftWinUIApplication\WindowsAppRuntimeVersion.swift"
-    $Content | Out-File -FilePath $OutPath -Encoding utf8 -Force
-    Write-Host "  Wrote $MajorMinor to $OutPath" -ForegroundColor DarkGray
-}
-
 function Update-SwiftWinRTRsp
 {
-    param(
-        [string]$PackagesDir,
-        [hashtable]$ResolvedPackages
-    )
+    param([string]$PackagesDir)
 
     $RspPath = Join-Path $ProjectRoot "generated\swiftwinrt.rsp"
     if (-not (Test-Path $RspPath))
@@ -368,7 +323,6 @@ function Update-SwiftWinRTRsp
     }
 
     $Lines = Get-Content -Path $RspPath
-
     $FilteredLines = @($Lines | Where-Object { $_ -notmatch "^-input\s+.*[/\\]" })
 
     $GeneratedDir = Join-Path $ProjectRoot "generated"
@@ -381,15 +335,14 @@ function Update-SwiftWinRTRsp
     }
 
     $NewInputLines = @()
-
-    foreach ($PackageId in $PackageIds)
+    foreach ($PackageId in $PackageInputPaths.Keys)
     {
-        $Version = $ResolvedPackages[$PackageId]
+        $Version = Get-CachedPackageVersion -PackageId $PackageId -PackagesDir $PackagesDir
         $InputPath = $PackageInputPaths[$PackageId]
 
         if ($Version)
         {
-            $pkgDir = Join-Path $PackagesDir "$PackageId.$Version"
+            $pkgDir = Join-Path $PackagesDir "$($PackageId.ToLower())\$Version"
             $FullInputPath = if ($InputPath)
             { Join-Path $pkgDir $InputPath
             } else
@@ -423,85 +376,33 @@ function Update-SwiftWinRTRsp
 
     $FinalLines | Out-File -FilePath $RspPath -Encoding ascii
     Write-Host "Updated swiftwinrt.rsp" -ForegroundColor Green
-    Write-Host ""
 }
 
-function Install-WindowsAppRuntime
+function Generate-VersionConstant
 {
-    param(
-        [string]$ProjectRoot,
-        [string]$TargetArch
-    )
+    param([string]$DllPath, [string]$OutPath)
 
-    $ArchMap = @{ "x64" = "X64"; "arm64" = "ARM64"; "x86" = "X86" }
-    $SysArch = $ArchMap[$TargetArch]
-    if (-not $SysArch)
+    if (-not (Test-Path $DllPath))
     {
-        Write-Host "  Unknown target architecture: $TargetArch" -ForegroundColor Yellow
+        Write-Host "  Bootstrap DLL not found at $DllPath, skipping" -ForegroundColor Yellow
         return
     }
 
-    $Packages = Get-AppxPackage -Name "Microsoft.WindowsAppRuntime.*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -notmatch "\.CBS\." -and $_.Architecture -eq $SysArch }
+    $Version = (Get-Item $DllPath).VersionInfo.FileVersionRaw
+    $MajorMinor = "0x{0:X8}" -f (($Version.Major -shl 16) -bor $Version.Minor)
 
-    if (-not $Packages)
-    {
-        Write-Host "  Windows App Runtime not found for architecture $TargetArch." -ForegroundColor Yellow
-        Write-Host "  Download and install the latest runtime (as Administrator):" -ForegroundColor Yellow
-        Write-Host "  https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/downloads" -ForegroundColor Cyan
-        return
-    }
-
-    $Packages = $Packages | ForEach-Object {
-        $name = $_.Name -replace '^Microsoft\.WindowsAppRuntime\.', ''
-        if ($name -match '^(\d+)$') {
-            $sdkVer = "$($matches[1]).0"
-        } elseif ($name -match '^(\d+\.\d+(?:\.\d+)?)') {
-            $sdkVer = $matches[1]
-        } else {
-            $sdkVer = "0.0"
-        }
-        $isPreview = $name -match '-'
-        $_ | Add-Member -NotePropertyName SdkVersion -NotePropertyValue ([System.Version]$sdkVer) -PassThru |
-            Add-Member -NotePropertyName IsPreview -NotePropertyValue $isPreview -PassThru
-    }
-
-    Write-Host "Updating Windows App Runtime..." -ForegroundColor Cyan
-    $Packages | Sort-Object -Property @{Expression='SdkVersion'; Descending=$true}, @{Expression='IsPreview'; Descending=$false} | ForEach-Object {
-        Write-Host ("  " + $_.Name.PadRight(40) + "SDK " + $_.SdkVersion.ToString().PadRight(12) + "v" + $_.Version.ToString().PadRight(20) + $_.Architecture) -ForegroundColor DarkGray
-    }
-
-    $Latest = $Packages | Sort-Object -Property @{Expression='SdkVersion'; Descending=$true}, @{Expression='IsPreview'; Descending=$false} | Select-Object -First 1
-    Write-Host ("  " + "Selected: " + $Latest.Name + " (SDK " + $Latest.SdkVersion + ")") -ForegroundColor Green
-
-    $SysDll = Get-ChildItem -Path $Latest.InstallLocation -Filter "Microsoft.WindowsAppRuntime.dll" -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -eq "Microsoft.WindowsAppRuntime.dll" -and $_.DirectoryName -eq $Latest.InstallLocation } |
-        Select-Object -First 1
-
-    if (-not $SysDll)
-    {
-        Write-Host "  System runtime DLL not found in $($Latest.Name)" -ForegroundColor Yellow
-        return
-    }
-
-    $Ver = $SysDll.VersionInfo.FileVersionRaw
-    $Major = $Ver.Major
-    $Minor = $Ver.Minor
-
-    $MajorMinor = "0x{0:X8}" -f (($Major -shl 16) -bor $Minor)
     $Content = @"
-// Auto-generated from system runtime $($Latest.Name) (v$Major.$Minor)
+// Auto-generated from bootstrap DLL file version ($($Version.Major).$($Version.Minor).$($Version.Build).$($Version.Revision))
 internal let WINDOWSAPPSDK_RELEASE_MAJORMINOR: UInt32 = $MajorMinor
 "@
 
-    $OutPath = Join-Path $ProjectRoot "generated\Sources\SwiftWinUIApplication\WindowsAppRuntimeVersion.swift"
     $OutDir = Split-Path $OutPath -Parent
     if (-not (Test-Path $OutDir))
     {
-        New-Item -ItemType Directory -Path $OutDir | Out-Null
+        New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
     }
     $Content | Out-File -FilePath $OutPath -Encoding utf8 -Force
-    Write-Host "  System runtime $($Latest.Name) v$Major.$Minor ($MajorMinor)" -ForegroundColor DarkGray
+    Write-Host "  Wrote $MajorMinor to $OutPath" -ForegroundColor DarkGray
 }
 
 # --- Main ---
@@ -510,32 +411,31 @@ $TargetArch = Resolve-Architecture
 Write-Host "Architecture: $TargetArch" -ForegroundColor Cyan
 Write-Host ""
 
-$PackagesDir = Join-Path $ProjectRoot ".nuget-packages"
-Write-Host "Installing packages..." -ForegroundColor Cyan
-
-$ResolvedPackages = Resolve-PackageVersions -PackageIds $PackageIds
-
-Write-Host "  Downloading packages (nuget.exe)..." -ForegroundColor DarkGray
-Restore-Packages -PackagesDir $PackagesDir -ResolvedPackages $ResolvedPackages
-Write-Host ""
-
-Write-Host ("Package".PadRight(55) + "Version") -ForegroundColor White
-Write-Host ("-" * 55 + "-" * 20) -ForegroundColor DarkGray
-foreach ($entry in $ResolvedPackages.GetEnumerator())
+Write-Host "Restoring Windows SDK packages (nuget)..." -ForegroundColor Cyan
+if ($Latest)
 {
-    Write-Host ($entry.Key.PadRight(55) + $entry.Value) -ForegroundColor Green
+    Write-Host "  (fetching latest versions - ignoring pinned versions in packages.config)" -ForegroundColor DarkGray
+} else
+{
+    Write-Host "  Using versions from packages.config. Use -Latest to install the latest versions." -ForegroundColor White
 }
-Write-Host ""
-
-Install-WindowsAppRuntime -ProjectRoot $ProjectRoot -TargetArch $TargetArch
+Invoke-NuGetRestore -ConfigDir $PlatformDir -Latest:$Latest
 Write-Host ""
 
 Write-Host "Copying required DLLs..." -ForegroundColor Cyan
-Copy-RequiredDLLs -PackagesDir $PackagesDir -ResolvedPackages $ResolvedPackages -TargetArch $TargetArch
+Copy-RequiredDLLs -TargetArch $TargetArch
 Write-Host ""
 
 Write-Host "Copying WinUI resources..." -ForegroundColor Cyan
-Copy-WinUIResources -PackagesDir $PackagesDir -ResolvedPackages $ResolvedPackages -TargetArch $TargetArch
+Copy-WinUIResources -TargetArch $TargetArch -PackagesDir $NugetCache
 Write-Host ""
 
-Update-SwiftWinRTRsp -PackagesDir $PackagesDir -ResolvedPackages $ResolvedPackages
+Write-Host "Updating swiftwinrt.rsp..." -ForegroundColor Cyan
+Update-SwiftWinRTRsp -PackagesDir $NugetCache
+Write-Host ""
+
+Write-Host "Writing WindowsAppRuntimeVersion.swift..." -ForegroundColor Cyan
+$BootstrapDll = Join-Path $ProjectRoot "generated\Resources\Microsoft.WindowsAppRuntime.Bootstrap.dll"
+$VersionOut = Join-Path $ProjectRoot "generated\Sources\SwiftWinUIApplication\WindowsAppRuntimeVersion.swift"
+Generate-VersionConstant -DllPath $BootstrapDll -OutPath $VersionOut
+Write-Host ""

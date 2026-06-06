@@ -1,6 +1,6 @@
 # Swift WinUI 3 Demo
 
-A Swift-on-Windows WinUI 3 desktop app using the Swift/WinRT bindings and projections.
+A Swift-on-Windows WinUI 3 desktop app using the Swift/WinRT bindings and projections. This is a **template project** — clone it, edit `Platform/Package.appxmanifest` and `Platform/packages.config` for your app, and build.
 
 ## Overview
 
@@ -11,16 +11,61 @@ Swift source → Swift/WinRT bindings → WinRT metadata (.winmd) → NuGet pack
                                                               → Windows App Runtime
 ```
 
-The setup pipeline handles this automatically:
+The setup pipeline handles this automatically. Package restore uses `nuget`; icon generation, manifest updates, and MSIX packaging use the [winapp CLI](https://learn.microsoft.com/en-us/windows/apps/dev-tools/winapp-cli/usage):
 
 ```
 setup.ps1
-├── Step 1: prerequisites.ps1        - Check for git, cmake, ninja, Swift, MSVC
-├── Step 2: install-packages.ps1     - Download NuGet packages + system runtime
-└── Step 3: generate-bindings.ps1    - Run swiftwinrt.exe to produce Swift sources
+├── Step 1: prerequisites.ps1        - Check for git, cmake, ninja, Swift, nuget, winapp
+├── Step 2: install-swiftwinrt.ps1   - Build swiftwinrt.exe (skipped if already present)
+├── Step 3: install-packages.ps1     - nuget restore + copy .pri / .dll / update rsp
+├── Step 4: generate-icon-resource.ps1 - winapp manifest update-assets + winapp tool rc
+└── Step 5: generate-bindings.ps1    - Run swiftwinrt.exe to produce Swift sources
 ```
 
-All scripts are idempotent - you can re-run them safely.
+All scripts are idempotent — re-run them safely.
+
+---
+
+## Template placeholders
+
+Before shipping your app, update these in `Platform/Package.appxmanifest`:
+
+| Field | What to set | Notes |
+|---|---|---|
+| `Identity.Name` | e.g. `Contoso.MyApp` | Reverse-DNS, used as the MSIX package name |
+| `Identity.Publisher` | e.g. `CN=Contoso` | **Must match the signing certificate's CN** |
+| `Identity.Version` | e.g. `1.0.0.0` | Bump on every Store / sideload submission |
+| `Properties.DisplayName` | your app's display name | Shown in the Start menu |
+| `Properties.PublisherDisplayName` | your publisher name | Shown in the Apps list |
+
+The `AppIcon.png` source at `Platform/AppIcon.png` is your single source image — drop any square PNG there and `winapp manifest update-assets` will generate the full MSIX asset set.
+
+---
+
+## Quick start
+
+```powershell
+# 1. Open a Developer PowerShell for VS 2022 (only required for first-time
+#    swiftwinrt.exe build; subsequent runs don't need it)
+
+# 2. Run the full setup (uses pinned versions from packages.config)
+.\scripts\setup.ps1
+
+#    ...or fetch the latest NuGet packages instead of the pinned versions
+# .\scripts\setup.ps1 -Latest
+
+# 3. Build and run unpackaged
+swift run App -c debug
+
+# 4. Build a signed, self-contained MSIX
+.\scripts\package.ps1
+```
+
+To install just the Swift/WinRT bindings generator separately:
+
+```powershell
+.\scripts\install-swiftwinrt.ps1
+```
 
 ---
 
@@ -34,50 +79,64 @@ The script checks for these tools and prompts to install any that are missing vi
 |------|----------------|
 | **winget** | Windows package manager used to install everything else |
 | **git** | Clones the swift-winrt source repository |
-| **CMake** | Build system used to compile the swift-winrt binder |
+| **CMake** | Build system used to compile the swift-winrt bindings generator |
 | **Ninja** | Fast build generator used by CMake |
-| **Swift** | Compiles the final app - download manually from [swift.org](https://swift.org/download/) |
-| **MSVC (cl.exe)** | C++ compiler needed to build swift-winrt and to link the final Swift binary against the Windows SDK |
+| **nuget** | Restores SDK packages from `packages.config` |
+| **winapp** | Generates icon assets, runs resource compiler, packs MSIX |
+| **Swift** | Compiles the final app — download manually from [swift.org](https://swift.org/download/) |
+| **MSVC (cl.exe)** | **Only required if building swift-winrt from source.** Loaded automatically by `install-swiftwinrt.ps1`; if missing, the script prompts to install Visual Studio 2022 with the *Desktop development with C++* workload. |
 
-> You must run from a **Developer PowerShell for VS 2022** so that `cl.exe`, the Windows SDK headers, and linker paths are all available in the environment. The script will attempt to load the dev shell automatically if it detects Visual Studio is installed.
+### Step 2: Swift/WinRT bindings generator (`install-swiftwinrt.ps1`)
 
-### Step 2: Install NuGet packages (`install-packages.ps1`)
+Fast path: if `.swift-winrt/bin/swiftwinrt.exe` already exists, the script prints "already installed" and exits immediately — **no developer environment loaded**.
 
-This script downloads everything the binder and the runtime need:
+Otherwise, it loads the Visual Studio developer environment (using `vswhere` + `Enter-VsDevShell`), then:
 
-#### 2a. Resolve latest package versions (in parallel)
+- Clones the [thebrowsercompany/swift-winrt](https://github.com/thebrowsercompany/swift-winrt) repo
+- Initializes submodules
+- Patches `CMakeLists.txt` for MSVC 19.51+ (`/await` → `/await:strict`)
+- Builds `swiftwinrt.exe` via `cmake --preset release`
+- Copies the binary to `.swift-winrt/bin/`
 
-The script queries `api.nuget.org` for the latest **stable** release of each of the 5 required packages. Each query runs as a separate background job so all 5 versions are resolved concurrently instead of sequentially.
+### Step 3: Restore SDK packages + stage resources (`install-packages.ps1`)
 
-#### 2b. Download packages via nuget.exe
+`install-packages.ps1` reads `Platform/packages.config` (standard NuGet XML) and restores the listed packages into the global NuGet cache via `nuget install`:
 
-The script generates a `packages.config` with the resolved versions and runs `nuget.exe restore` to download and extract each package. Already-cached packages (where the versioned directory already exists) are skipped.
+1. **Restore packages** — by default it runs `nuget install` per package with the pinned versions from `Platform/packages.config`. Pass `-Latest` to ignore the pinned versions and fetch the latest stable versions instead.
+2. **Copy `Microsoft.WindowsAppRuntime.Bootstrap.dll`** from the NuGet package cache to `generated/Resources/`
+3. **Copy `Microsoft.UI.Xaml.Controls.pri`** from the WinUI NuGet package's `runtimes/win-<arch>/native/` to `generated/Resources/`
+4. **Update `generated/swiftwinrt.rsp`** with `-input` lines pointing to the downloaded `.winmd` files
+5. **Write `generated/Sources/SwiftWinUIApplication/WindowsAppRuntimeVersion.swift`** with a `WINDOWSAPPSDK_RELEASE_MAJORMINOR` constant derived from the bootstrap DLL's file version
 
-> `nuget.exe` is downloaded to `%TEMP%` by `prerequisites.ps1` if not already present.
+The `Platform/packages.config` package list (used when running without `-Latest`):
 
-| Package | What it provides |
-|---------|-----------------|
-| `Microsoft.WindowsAppSDK.Foundation` | Bootstrap DLL + WinRT metadata for the Windows App SDK foundation layer |
-| `Microsoft.WindowsAppSDK.WinUI` | WinRT metadata for `Microsoft.UI.Xaml.*` (controls, styling, layout) |
-| `Microsoft.Web.WebView2` | WinRT metadata + the WebView2 control winmd |
+| Package | Purpose |
+|---|---|
+| `Microsoft.WindowsAppSDK` | Metapackage (Foundation + WinUI + Runtime + more) |
+| `Microsoft.WindowsAppSDK.Foundation` | WinRT metadata for Windows App SDK foundation |
+| `Microsoft.WindowsAppSDK.WinUI` | WinRT metadata for `Microsoft.UI.Xaml.*` |
+| `Microsoft.Web.WebView2` | WebView2 control + `Microsoft.Web.WebView2.Core.winmd` |
 | `Microsoft.Windows.SDK.Contracts` | Broad WinRT metadata for `Windows.*` namespaces |
-| `Microsoft.WindowsAppSDK.InteractiveExperiences` | WinRT metadata for interactive/tile/notification APIs |
+| `Microsoft.WindowsAppSDK.InteractiveExperiences` | WinRT metadata for tiles / notifications |
+| `Microsoft.WindowsAppSDK.Runtime` | Self-contained MSIX deployment |
 
-#### 2c. Copy runtime DLLs
+### Step 4: Generate icon assets + AppIcon.res (`generate-icon-resource.ps1`)
 
-The bootstrap DLL (`Microsoft.WindowsAppRuntime.Bootstrap.dll`) is copied from the extracted Foundation package into `generated/Resources/`. The WinUI resource file (`Microsoft.UI.Xaml.Controls.pri`) is copied from the WinUI package. These files are needed at app launch.
+1. **`winapp manifest update-assets Platform/AppIcon.png --manifest Platform/Package.appxmanifest`** — generates the full MSIX icon set from your single source PNG and **rewrites the manifest in place** to reference them:
+   - 5 scale variants (`.scale-100` / `125` / `150` / `200` / `400`)
+   - 14 plated targetsize variants
+   - 14 unplated targetsize variants
+   - `AppIcon.ico` (multi-resolution ICO for shell integration)
 
-#### 2d. Resolve system Windows App Runtime
+   All output goes to `Platform/Assets/`.
 
-The script queries `Get-AppxPackage` to find the **latest system-installed** Windows App Runtime version. This is the runtime installed via the Microsoft Store or the Windows App SDK installer - not the NuGet packages. It extracts the version from `Microsoft.WindowsAppRuntime.dll` and writes it to `WindowsAppRuntimeVersion.swift`.
+2. **`winapp tool rc /nologo _AppIcon.rc`** — compiles `Platform/Assets/AppIcon.ico` to `Platform/Assets/AppIcon.res` (compiled resource linked into the `.exe` via `Package.swift`'s `linkerSettings`).
 
-The version is resolved from the **package name**, not the `PackageVersion` field, because Microsoft uses inflated build numbers for 1.x packages (1.6 → 6000, 1.8 → 8000) that don't sort correctly against 2.x package versions.
+   The intermediate `_AppIcon.rc` is written by PowerShell and deleted after compilation.
 
-#### 2e. Update `swiftwinrt.rsp`
+`winapp tool rc` invokes the resource compiler from `Microsoft.Windows.SDK.BuildTools` — **no Visual Studio developer environment needed** at this step.
 
-The response file (`generated/swiftwinrt.rsp`) tells `swiftwinrt.exe` where to find the WinRT metadata. This step replaces the `-input` lines with absolute paths to the downloaded NuGet packages.
-
-### Step 3: Generate Swift/WinRT bindings (`generate-bindings.ps1`)
+### Step 5: Generate Swift/WinRT bindings (`generate-bindings.ps1`)
 
 `swiftwinrt.exe` reads the `.winmd` metadata files and generates Swift source code:
 
@@ -85,38 +144,17 @@ The response file (`generated/swiftwinrt.rsp`) tells `swiftwinrt.exe` where to f
 swiftwinrt.exe @generated/swiftwinrt.rsp
 ```
 
-The `@` syntax reads arguments from the response file. The output lands in `generated/Sources/` as several Swift packages:
+Output lands in `generated/Sources/` as several Swift packages:
 
 | Package | Generated from |
-|---------|---------------|
+|---------|----------------|
 | `CWinRT` | Built-in (low-level COM/WinRT interop) |
 | `WindowsFoundation` | `Windows.Foundation.*` metadata |
 | `WinUI` | `Microsoft.UI.Xaml.*` metadata |
 | `UWP` | `Windows.UI.*` metadata |
 | `WinAppSDK` | `Microsoft.WindowsAppSDK.*` metadata |
+| `WebView2Core` | `Microsoft.Web.WebView2.Core` metadata |
 | `SwiftWinUIApplication` | Template (app lifecycle wrapper) |
-
-These are declared as local dependencies in `generated/Package.swift`, which the root `Package.swift` references with `.package(path: "generated")`.
-
----
-
-## Quick start
-
-```powershell
-# 1. Open a Developer PowerShell for VS 2022
-
-# 2. Run the full setup
-.\scripts\setup.ps1
-
-# 3. Build and run
-swift run App -c debug
-```
-
-To install just the Swift/WinRT binder separately:
-
-```powershell
-.\scripts\install-swiftwinrt.ps1
-```
 
 ---
 
@@ -132,24 +170,47 @@ swift-WinUI3App/
 ├── generated/
 │   ├── swiftwinrt.rsp                 # Response file for swiftwinrt.exe
 │   ├── Package.swift                  # Generated bindings package manifest
-│   ├── Resources/                     # Runtime DLLs + PRI files
+│   ├── Resources/
+│   │   ├── Microsoft.UI.Xaml.Controls.pri
+│   │   └── Microsoft.WindowsAppRuntime.Bootstrap.dll
 │   └── Sources/                       # Generated Swift projections
 │       ├── CWinRT/
 │       ├── WindowsFoundation/
 │       ├── WinUI/
 │       ├── UWP/
 │       ├── WinAppSDK/
+│       ├── WebView2Core/
 │       └── SwiftWinUIApplication/
+├── Platform/                          # Windows app packaging + assets
+│   ├── packages.config                # NuGet package list (used by install-packages.ps1)
+│   ├── winapp.yaml                    # winapp CLI config (optional; for winapp restore)
+│   ├── Package.appxmanifest           # MSIX manifest (rewritten by winapp on each setup)
+│   ├── AppIcon.png                    # Source icon (single PNG)
+│   ├── WindowsPackage.pfx             # Auto-generated dev signing cert
+│   ├── Content/                       # App resources (Picture1.png, etc.)
+│   └── Assets/                        # Generated by winapp manifest update-assets
+│       ├── StoreLogo.png              (50x50)
+│       ├── AppList.png                (44x44)
+│       ├── MedTile.png                (150x150)
+│       ├── WideTile.png               (310x150)
+│       ├── AppIcon.ico                (multi-size ICO)
+│       ├── AppIcon.res                (compiled via winapp tool rc)
+│       └── ... (scale + targetsize variants)
 ├── .swift-winrt/
 │   ├── bin/swiftwinrt.exe             # Compiled bindings generator
 │   └── source/                        # (optional) swift-winrt source
-├── .nuget-packages/                   # Cached NuGet downloads
+├── .winapp/                           # Managed by winapp (gitignored)
+│   ├── bin/<arch>/                    # Runtime DLLs (Bootstrap, WebView2Loader, etc.)
+│   ├── include/                       # C++/WinRT headers
+│   └── lib/                           # Static libraries
 ├── scripts/
 │   ├── setup.ps1                      # Full pipeline orchestrator
 │   ├── prerequisites.ps1              # Toolchain checks
-│   ├── install-packages.ps1           # NuGet + runtime setup
 │   ├── install-swiftwinrt.ps1         # Build swiftwinrt.exe from source
-│   └── generate-bindings.ps1          # Generate the bindings
+│   ├── install-packages.ps1           # nuget restore + copy .pri / .dll / update rsp
+│   ├── generate-icon-resource.ps1     # winapp manifest update-assets + winapp tool rc
+│   ├── generate-bindings.ps1          # Generate the Swift bindings
+│   └── package.ps1                    # Build a signed self-contained MSIX
 ├── Package.swift                      # Root Swift package
 └── README.md
 ```

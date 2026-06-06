@@ -13,3 +13,12 @@ generated/Resources/*.dll
 generated/Resources/*.pri
 .nuget-packages
 .swift-winrt
+
+# Development certificate
+*.pfx
+
+# Windows SDK packages and generated files
+.winapp
+
+# Generated MSIX icon assets and compiled icon resource
+Platform/Assets/

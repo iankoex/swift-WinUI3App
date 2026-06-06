@@ -3,71 +3,52 @@ param(
     [string]$Arch,
     [string]$CertificatePath,
     [string]$CertificatePassword,
-    [switch]$SkipSign
+    [string[]]$Locales = @("en-US")
 )
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 
-# --- Swift runtime DLL allow list (mirrors the Swift Bundler) ---
+# --- Swift runtime DLL allow list (trimmed to actually referenced DLLs) ---
 $dllBundlingAllowList = @(
     "swiftCore",
     "swiftCRT",
     "swiftDispatch",
-    "swiftDistributed",
     "swiftObservation",
     "swiftRegexBuilder",
-    "swiftRemoteMirror",
-    "swiftSwiftOnoneSupport",
     "swiftSynchronization",
     "swiftWinSDK",
     "Foundation",
-    "FoundationXML",
     "FoundationNetworking",
     "FoundationEssentials",
     "FoundationInternationalization",
     "BlocksRuntime",
     "_FoundationICU",
-    "_InternalSwiftScan",
-    "_InternalSwiftStaticMirror",
     "swift_Concurrency",
     "swift_RegexParser",
     "swift_StringProcessing",
-    "swift_Differentiation",
-    "concrt140",
     "msvcp140",
-    "msvcp140d",
-    "msvcp140_1",
-    "msvcp140_2",
-    "msvcp140_atomic_wait",
-    "msvcp140_codecvt_ids",
-    "vccorlib140",
     "vcruntime140",
-    "vcruntime140d",
     "vcruntime140_1",
-    "vcruntime140_1d",
-    "ucrtbased",
-    "vcruntime140_threads",
     "dispatch"
 ) | ForEach-Object { "$_.dll".ToLower() }
 
 # --- Project layout ---
-$AssetsDir = Join-Path $ProjectRoot "Assets"
-$ManifestDir = $AssetsDir
-$IconsDir = Join-Path $AssetsDir "Icons"
+$PlatformDir = Join-Path $ProjectRoot "Platform"
+$ManifestDir = $PlatformDir
+$IconsDir = Join-Path $PlatformDir "Assets"
 $StagingDir = Join-Path $ProjectRoot ".build\out\msix-staging"
 $OutputDir = Join-Path $ProjectRoot ".build\out"
 
-# --- Required asset files (Windows App SDK / MSIX convention) ---
+# --- Required asset files (matches Platform/Package.appxmanifest) ---
 $RequiredAssets = @(
     "StoreLogo.png",
-    "Square150x150Logo.png",
-    "Square44x44Logo.png",
-    "Wide310x150Logo.png",
-    "SplashScreen.png"
+    "MedTile.png",
+    "AppList.png",
+    "WideTile.png"
 )
 
 # --- Required manifest file ---
-$RequiredManifest = "AppxManifest.xml"
+$RequiredManifest = "Package.appxmanifest"
 
 # --- Architecture resolution ---
 function Resolve-Architecture
@@ -114,23 +95,36 @@ function Get-CommandPath
 function Write-Status
 {
     param([string]$Name, [string]$Version, [string]$Message)
-    $line = "  $Name".PadRight(36)
+    $line = "  $Name".PadRight(24)
     if ($Version)
     {
-        $line += $Version.PadRight(28)
+        $line += $Version.PadRight(10)
     } else
     {
-        $line += "NOT FOUND".PadRight(28)
+        $line += "NOT FOUND".PadRight(10)
     }
     $line += $Message
     $color = if ($Version)
-    { 'Green' }
-    else
-    { 'Yellow' }
+    { 'Green'
+    } else
+    { 'Yellow'
+    }
     Write-Host $line -ForegroundColor $color
 }
 
 # --- Try to load the VS developer environment (same as prerequisites.ps1) ---
+function Get-PackageVersion
+{
+    # Reads Platform/packages.config and returns the version for a given package id.
+    param([string]$PackageId)
+    $configPath = Join-Path $PlatformDir "packages.config"
+    if (-not (Test-Path $configPath)) { return $null }
+    [xml]$xml = Get-Content -LiteralPath $configPath
+    $node = $xml.packages.package | Where-Object { $_.id -eq $PackageId }
+    if ($node) { return $node.version }
+    return $null
+}
+
 function Invoke-VsDevShell
 {
     $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -149,10 +143,18 @@ function Invoke-VsDevShell
         Import-Module $devShellModule
         $nativeArch = switch ($env:PROCESSOR_ARCHITECTURE)
         {
-            "ARM64" { "arm64" }
-            "AMD64" { "amd64" }
-            "x86"   { "x86" }
-            default { "amd64" }
+            "ARM64"
+            { "arm64"
+            }
+            "AMD64"
+            { "amd64"
+            }
+            "x86"
+            { "x86"
+            }
+            default
+            { "amd64"
+            }
         }
         & Microsoft.VisualStudio.DevShell\Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -Arch $nativeArch
         return $true
@@ -180,65 +182,16 @@ function Test-PackagingTools
         Write-Status "swift" $swiftVersion
     }
 
-    # makeappx.exe (Windows SDK)
-    $makeAppxPath = Get-CommandPath "makeappx.exe"
-    if (-not $makeAppxPath)
+    # winapp CLI (handles SDK BuildTools, makeappx, signing)
+    $winappPath = Get-CommandPath "winapp"
+    if (-not $winappPath)
     {
-        Write-Status "makeappx.exe" -Message "Install Windows SDK 10.0.19041 or later."
+        Write-Status "winapp" -Message "Install with: winget install Microsoft.WinAppCli"
         $allSatisfied = $false
     } else
     {
-        $makeAppxVersion = (& makeappx.exe 2>&1 | Select-Object -First 1) -replace '^\s*Microsoft\s*\(R\)\s*MakeAppx\s*Tool\s*Version:\s*', ''
-        Write-Status "makeappx.exe" "v$makeAppxVersion"
-    }
-
-    # signtool.exe (Windows SDK)
-    $signToolPath = Get-CommandPath "signtool.exe"
-    if (-not $signToolPath)
-    {
-        Write-Status "signtool.exe" -Message "Install Windows SDK 10.0.19041 or later."
-        $allSatisfied = $false
-    } else
-    {
-        $null = & signtool.exe 2>&1
-        Write-Status "signtool.exe" "FOUND"
-    }
-
-    # Try loading VS developer environment if tools are missing
-    if (-not $allSatisfied)
-    {
-        Write-Host ""
-        Write-Host "Attempting to load Visual Studio developer environment..." -ForegroundColor DarkGray
-        if (Invoke-VsDevShell)
-        {
-            Write-Host "  Developer environment loaded. Re-checking tools..." -ForegroundColor DarkGray
-            $allSatisfied = $true
-
-            $makeAppxPath = Get-CommandPath "makeappx.exe"
-            if ($makeAppxPath)
-            {
-                $makeAppxVersion = (& makeappx.exe 2>&1 | Select-Object -First 1) -replace '^\s*Microsoft\s*\(R\)\s*MakeAppx\s*Tool\s*Version:\s*', ''
-                Write-Status "makeappx.exe" "v$makeAppxVersion"
-            } else
-            {
-                Write-Status "makeappx.exe" -Message "Still not found."
-                $allSatisfied = $false
-            }
-
-            $signToolPath = Get-CommandPath "signtool.exe"
-            if ($signToolPath)
-            {
-                $null = & signtool.exe 2>&1
-                Write-Status "signtool.exe" "FOUND"
-            } else
-            {
-                Write-Status "signtool.exe" -Message "Still not found."
-                $allSatisfied = $false
-            }
-        } else
-        {
-            Write-Host "  Could not load Visual Studio developer environment automatically." -ForegroundColor Yellow
-        }
+        $winappVersion = (& winapp --version 2>&1 | Select-Object -Last 1) -replace '^\s*v?(.+?)\s*$', '$1'
+        Write-Status "winapp" "v$winappVersion"
     }
 
     Write-Host ""
@@ -246,9 +199,9 @@ function Test-PackagingTools
     if (-not $allSatisfied)
     {
         Write-Host "Some packaging tools are missing." -ForegroundColor Red
-        Write-Host "Install the Windows SDK and run this script from a" -ForegroundColor Yellow
-        Write-Host "'Developer PowerShell for VS 2022' (or newer)." -ForegroundColor Yellow
-        Write-Host "You can also run scripts\prerequisites.ps1 to set up the environment." -ForegroundColor DarkGray
+        Write-Host "Install the winapp CLI (it manages SDK BuildTools and signing):" -ForegroundColor Yellow
+        Write-Host "  winget install Microsoft.WinAppCli --source winget" -ForegroundColor White
+        Write-Host "Or run scripts\prerequisites.ps1 to set up the environment." -ForegroundColor DarkGray
         exit 1
     }
 }
@@ -271,7 +224,6 @@ function Test-PackagingFiles
     } else
     {
         Write-Status "$RequiredManifest" -Message "Missing at $manifestPath"
-        Write-Host "    Create an AppxManifest.xml - see https://learn.microsoft.com/en-us/windows/uwp/design/app-settings/store-and-publish-manifest" -ForegroundColor Yellow
         $allSatisfied = $false
     }
 
@@ -293,18 +245,8 @@ function Test-PackagingFiles
 
     if (-not $allSatisfied)
     {
-        Write-Host "Required files are missing. Place them in $ManifestDir and $IconsDir." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Suggested folder structure:" -ForegroundColor Cyan
-        Write-Host "  Assets/" -ForegroundColor White
-        Write-Host "    AppxManifest.xml" -ForegroundColor DarkGray
-        Write-Host "    WindowsPackage.pfx (optional signing cert)" -ForegroundColor DarkGray
-        Write-Host "    Icons/" -ForegroundColor White
-        Write-Host "      StoreLogo.png           (50x50)" -ForegroundColor DarkGray
-        Write-Host "      Square150x150Logo.png   (150x150)" -ForegroundColor DarkGray
-        Write-Host "      Square44x44Logo.png     (44x44)" -ForegroundColor DarkGray
-        Write-Host "      Wide310x150Logo.png     (310x150)" -ForegroundColor DarkGray
-        Write-Host "      SplashScreen.png        (620x300)" -ForegroundColor DarkGray
+        Write-Host "Required files are missing. Place them in $ManifestDir." -ForegroundColor Red
+        Write-Host "  Run .\scripts\generate-icon-resource.ps1 to generate assets from Platform\AppIcon.png." -ForegroundColor Yellow
         exit 1
     }
 }
@@ -312,18 +254,37 @@ function Test-PackagingFiles
 # --- Step 3: Build for release ---
 function Build-Release
 {
-    param([string]$TargetArch)
+    param(
+        [string]$TargetArch,
+        [string]$ExeName
+    )
 
     Write-Host "Building release ($TargetArch)..." -ForegroundColor Cyan
     Write-Host ""
 
-    & swift build -c release
+    & swift build -c release -Xswiftc -Osize -Xswiftc -g -Xswiftc -gnone -Xlinker -opt:ref -Xlinker -opt:icf
     if ($LASTEXITCODE -ne 0)
     {
         Write-Host "Release build failed with exit code $LASTEXITCODE." -ForegroundColor Red
         exit 1
     }
     Write-Host ""
+
+    # Strip debug symbols to reduce binary size
+    $exePath = Join-Path $ProjectRoot ".build\release\$ExeName.exe"
+    if (Test-Path $exePath)
+    {
+        Write-Host "Stripping symbols from $ExeName.exe..." -ForegroundColor Cyan
+        & llvm-strip -x $exePath 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0)
+        {
+            Write-Host "Symbol stripping failed, but build succeeded." -ForegroundColor Yellow
+        } else
+        {
+            Write-Host "Symbols stripped successfully." -ForegroundColor Green
+        }
+        Write-Host ""
+    }
 }
 
 # --- Step 4: Stage the package layout ---
@@ -343,11 +304,11 @@ function Stage-PackageLayout
     }
     New-Item -ItemType Directory -Path $StagingDir | Out-Null
 
-    # manifest (makeappx.exe requires AppxManifest.xml)
-    Copy-Item -Path (Join-Path $ManifestDir $RequiredManifest) -Destination (Join-Path $StagingDir "AppxManifest.xml") -Force
+    # manifest
+    Copy-Item -Path (Join-Path $ManifestDir $RequiredManifest) -Destination $StagingDir -Force
 
     # icons
-    $stagedIcons = Join-Path $StagingDir "Icons"
+    $stagedIcons = Join-Path $StagingDir "Assets"
     New-Item -ItemType Directory -Path $stagedIcons | Out-Null
     foreach ($asset in $RequiredAssets)
     {
@@ -367,15 +328,36 @@ function Stage-PackageLayout
     Copy-Item -Path $exeSource -Destination $StagingDir -Force
     Write-Host "  Copied $ExeName.exe" -ForegroundColor DarkGray
 
-    # swift runtime DLLs
-    $swiftBinDir = Join-Path (Split-Path (Get-CommandPath "swift") -Parent) ""
-    $stagedDlls = 0
-    if (Test-Path $swiftBinDir)
+    # swift runtime DLLs — look in the Runtimes dir (contains swiftCore, Foundation, etc.)
+    $swiftExe = Get-CommandPath "swift"
+    $swiftDir = Split-Path $swiftExe -Parent
+    # swift.exe is at ...\Swift\Toolchains\<ver>\usr\bin\swift.exe
+    # runtimes are at ...\Swift\Runtimes\<ver>\usr\bin
+    $swiftRoot = $swiftDir
+    for ($i = 0; $i -lt 4; $i++)
+    { $swiftRoot = Split-Path $swiftRoot -Parent
+    }
+    $runtimeDirs = @()
+    $runtimeBase = Join-Path $swiftRoot "Runtimes"
+    if (Test-Path $runtimeBase)
     {
-        Get-ChildItem -Path $swiftBinDir -Filter "*.dll" -File | ForEach-Object {
+        $runtimeDirs += Get-ChildItem -Path $runtimeBase -Directory | Sort-Object Name -Descending | ForEach-Object { Join-Path $_.FullName "usr\bin" }
+    }
+    # also fall back to the toolchain bin (catches anything missed in Runtimes)
+    $runtimeDirs += $swiftDir
+
+    $stagedDlls = 0
+    $seen = @{}
+    foreach ($dir in $runtimeDirs)
+    {
+        if (-not (Test-Path $dir))
+        { continue
+        }
+        Get-ChildItem -Path $dir -Filter "*.dll" -File | ForEach-Object {
             $baseName = $_.BaseName.ToLower()
-            if ($dllBundlingAllowList -contains "$baseName.dll")
+            if ($dllBundlingAllowList -contains "$baseName.dll" -and -not $seen.ContainsKey($baseName))
             {
+                $seen[$baseName] = $true
                 Copy-Item -Path $_.FullName -Destination $StagingDir -Force
                 $stagedDlls++
             }
@@ -392,10 +374,98 @@ function Stage-PackageLayout
         Write-Host "  Copied $($bundle.Name)" -ForegroundColor DarkGray
     }
 
+    # --- Windows App SDK framework DLLs (self-contained deployment) ---
+    $nugetDir = Join-Path $env:USERPROFILE ".nuget\packages"
+    if (Test-Path $nugetDir)
+    {
+        $foundationVer = Get-PackageVersion -PackageId "Microsoft.WindowsAppSDK.Foundation"
+        $winuiVer      = Get-PackageVersion -PackageId "Microsoft.WindowsAppSDK.WinUI"
+        $interactVer   = Get-PackageVersion -PackageId "Microsoft.WindowsAppSDK.InteractiveExperiences"
+
+        $frameworkPackages = @()
+        if ($foundationVer) { $frameworkPackages += "Microsoft.WindowsAppSDK.Foundation.$foundationVer" }
+        if ($winuiVer)      { $frameworkPackages += "Microsoft.WindowsAppSDK.WinUI.$winuiVer" }
+        if ($interactVer)   { $frameworkPackages += "Microsoft.WindowsAppSDK.InteractiveExperiences.$interactVer" }
+        $frameworkDllCount = 0
+        foreach ($pkg in $frameworkPackages)
+        {
+            $nativeDir = Join-Path $nugetDir "$pkg\runtimes-framework\win-x64\native"
+            if (-not (Test-Path $nativeDir))
+            { continue
+            }
+            # Copy DLLs
+            Get-ChildItem -Path $nativeDir -Filter "*.dll" -File | ForEach-Object {
+                Copy-Item -Path $_.FullName -Destination $StagingDir -Force
+                $frameworkDllCount++
+            }
+            # Copy .pri resource index files
+            Get-ChildItem -Path $nativeDir -Filter "*.pri" -File | ForEach-Object {
+                Copy-Item -Path $_.FullName -Destination $StagingDir -Force
+            }
+        }
+        Write-Host "  Copied $frameworkDllCount Windows App SDK framework DLL(s)" -ForegroundColor DarkGray
+
+        # WinUI XAML locale resources (only the requested locales)
+        $winuiNative = Join-Path $nugetDir "Microsoft.WindowsAppSDK.WinUI.$winuiVer\runtimes-framework\win-x64\native"
+        if (Test-Path $winuiNative)
+        {
+            $localeCount = 0
+            $localeSet = $Locales | ForEach-Object { $_.ToLower() }
+            Get-ChildItem -Path $winuiNative -Directory | ForEach-Object {
+                if ($localeSet -contains $_.Name.ToLower())
+                {
+                    $destDir = Join-Path $StagingDir $_.Name
+                    Copy-Item -Path $_.FullName -Destination $destDir -Recurse -Force
+                    $localeCount++
+                }
+            }
+            if ($localeCount -gt 0)
+            {
+                Write-Host "  Copied $localeCount WinUI locale resource director(ies): $($Locales -join ', ')" -ForegroundColor DarkGray
+            } else
+            {
+                Write-Host "  WARNING: No matching WinUI locale resources found for: $($Locales -join ', ')" -ForegroundColor Yellow
+            }
+        }
+
+        # Merge framework activatable class registrations into manifest
+    $stagedManifest = Join-Path $StagingDir $RequiredManifest
+        $manifestContent = [System.IO.File]::ReadAllText($stagedManifest)
+
+        $fragmentPackages = $frameworkPackages
+
+        $extensionsBlock = "  <Extensions>"
+        foreach ($pkg in $fragmentPackages)
+        {
+            $fragFile = Join-Path $nugetDir "$pkg\runtimes-framework\package.appxfragment"
+            if (-not (Test-Path $fragFile))
+            { continue
+            }
+            $fragContent = [System.IO.File]::ReadAllText($fragFile)
+            if ($fragContent -match '(?s)<Extensions.*?>(.*?)</Extensions>')
+            {
+                $extensionsBlock += $matches[1]
+            }
+        }
+        $extensionsBlock += "`r`n  </Extensions>"
+
+        $closePackageTag = "</Package>"
+        $insertPos = $manifestContent.LastIndexOf($closePackageTag)
+        if ($insertPos -ge 0)
+        {
+            $manifestContent = $manifestContent.Insert($insertPos, "`r`n$extensionsBlock`r`n")
+            [System.IO.File]::WriteAllText($stagedManifest, $manifestContent, [System.Text.UTF8Encoding]::new($false))
+            Write-Host "  Merged framework activatable class registrations into manifest" -ForegroundColor DarkGray
+        }
+    } else
+    {
+        Write-Host "  WARNING: .nuget-packages not found - framework DLLs and manifest extensions not bundled." -ForegroundColor Yellow
+    }
+
     Write-Host ""
 }
 
-# --- Step 5: Create the MSIX package ---
+# --- Step 5: Create and sign the MSIX package ---
 function New-MsixPackage
 {
     param(
@@ -420,82 +490,89 @@ function New-MsixPackage
         Remove-Item $msixPath -Force
     }
 
-    & makeappx.exe pack -d $StagingDir -p $msixPath 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0)
+    # Pull the publisher CN from the staged manifest so cert and manifest agree.
+    $stagedManifest = Join-Path $StagingDir $RequiredManifest
+    [xml]$manifestXml = Get-Content $stagedManifest
+    $publisher = $manifestXml.Package.Identity.Publisher
+    if (-not $publisher)
     {
-        Write-Host "MSIX packaging failed with exit code $LASTEXITCODE." -ForegroundColor Red
+        Write-Host "  Manifest is missing the Identity@Publisher attribute." -ForegroundColor Red
         exit 1
     }
-    Write-Host "  Package created: $msixPath" -ForegroundColor Green
 
-    return $msixPath
-}
-
-# --- Step 6: Sign the package (optional) ---
-function Add-PackageSignature
-{
-    param(
-        [string]$PackagePath,
-        [string]$CertPath,
-        [string]$CertPassword
-    )
-
-    Write-Host "Signing package..." -ForegroundColor Cyan
-    Write-Host ""
-
-    $pwdArg = if ($CertPassword)
-    { "/p $CertPassword" }
-    else
-    { "" }
-
-    & signtool.exe sign /fd SHA256 /a /f "`"$CertPath`"" $pwdArg "`"$PackagePath`"" 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0)
+    # Determine signing certificate
+    if ($CertificatePath)
     {
-        Write-Host "  Signing failed (exit $LASTEXITCODE)." -ForegroundColor Yellow
-        Write-Host "  The MSIX was created unsigned at: $PackagePath" -ForegroundColor Yellow
-        Write-Host "  To sign it manually, run in a Developer PowerShell:" -ForegroundColor DarkGray
-        Write-Host "    signtool.exe sign /fd SHA256 /a /f `"<path-to.pfx>`" `"$PackagePath`"" -ForegroundColor DarkGray
-        Write-Host "  Or pass -CertificatePath and -CertificatePassword to this script." -ForegroundColor DarkGray
-        return
+        $certPath = $CertificatePath
+        $certPassword = if ($CertificatePassword)
+        { $CertificatePassword
+        } else
+        { "password"
+        }
+        Write-Host "  Using provided cert: $certPath" -ForegroundColor DarkGray
+    } else
+    {
+        $certPath = Join-Path $PlatformDir "WindowsPackage.pfx"
+        $certPassword = "password"
+        if (-not (Test-Path $certPath))
+        {
+            Write-Host "  Generating self-signed cert for publisher $publisher..." -ForegroundColor DarkGray
+            & winapp cert generate --publisher $publisher --output $certPath --password $certPassword 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0)
+            {
+                Write-Host "  Cert generation failed. Provide your own with -CertificatePath." -ForegroundColor Red
+                exit 1
+            }
+        } else
+        {
+            Write-Host "  Reusing existing dev cert: $certPath" -ForegroundColor DarkGray
+        }
     }
-    Write-Host "  Package signed." -ForegroundColor Green
-}
 
-# --- Self-signed certificate (default) ---
-function Ensure-Certificate
-{
-    $defaultCert = Join-Path $AssetsDir "WindowsPackage.pfx"
-    if ($SkipSign)
-    {
-        return $null
-    }
-    if ($CertificatePath -and (Test-Path $CertificatePath))
-    {
-        return @{ Path = $CertificatePath; Password = $CertificatePassword }
-    }
-    if (Test-Path $defaultCert)
-    {
-        $pw = if ($CertificatePassword) { $CertificatePassword } else { "password" }
-        return @{ Path = $defaultCert; Password = $pw }
-    }
-    Write-Host "Generating self-signed certificate for testing..." -ForegroundColor Yellow
-    Write-Host "  To use your own certificate, pass -CertificatePath and -CertificatePassword." -ForegroundColor DarkGray
+    # Install cert to trust store so the signed MSIX can be installed locally
+    $certInstalled = $false
     try
     {
-        $cert = New-SelfSignedCertificate -Type Custom -Subject "CN=SwiftWinUI3App" -KeyUsage DigitalSignature -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3") -CertStoreLocation "Cert:\CurrentUser\My"
-        $pwd = ConvertTo-SecureString -String "password" -Force -AsPlainText
-        Export-PfxCertificate -Cert $cert -FilePath $defaultCert -Password $pwd | Out-Null
-        Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force
-        Write-Host "  Generated: $defaultCert" -ForegroundColor Green
-        return @{ Path = $defaultCert; Password = "password" }
-    }
-    catch
+        $psCmd = "winapp cert install `"$certPath`" --password $certPassword"
+        Start-Process -FilePath powershell -ArgumentList "-NoProfile -Command $psCmd" -Verb RunAs -Wait -WindowStyle Hidden
+        if ($LASTEXITCODE -eq 0)
+        { $certInstalled = $true
+        }
+    } catch
     {
-        Write-Host "  Certificate generation failed: $_" -ForegroundColor Yellow
-        Write-Host "  The MSIX will be created unsigned. Install the Windows SDK and try" -ForegroundColor Yellow
-        Write-Host "  passing -CertificatePath and -CertificatePassword with your own cert." -ForegroundColor Yellow
-        return $null
     }
+    if (-not $certInstalled)
+    {
+        try
+        {
+            Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\Root -ErrorAction Stop | Out-Null
+            $certInstalled = $true
+        } catch
+        {
+        }
+    }
+    if ($certInstalled)
+    {
+        Write-Host "  Cert trusted for local install." -ForegroundColor Green
+    } else
+    {
+        Write-Host "  Could not install cert automatically." -ForegroundColor Yellow
+        Write-Host "  To trust it (required for MSIX install), run as Admin:" -ForegroundColor Yellow
+        Write-Host "    Import-Certificate -FilePath '$certPath' -CertStoreLocation Cert:\LocalMachine\Root" -ForegroundColor White
+    }
+
+    $env:WINAPP_CLI_TELEMETRY_OPTOUT = "1"
+    $packOutput = & winapp pack $StagingDir --cert $certPath --cert-password $certPassword --output $msixPath --executable "$ExeName.exe" 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0)
+    {
+        Write-Host "  MSIX packaging failed (exit $exitCode)." -ForegroundColor Red
+        Write-Host $packOutput -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "  Package created and signed: $msixPath" -ForegroundColor Green
+
+    return $msixPath
 }
 
 # --- Main ---
@@ -506,13 +583,13 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Swift WinUI 3 App - MSIX Packaging" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Architecture: $TargetArch" -ForegroundColor White
+Write-Host "  Locales:      $($Locales -join ', ')" -ForegroundColor White
 Write-Host "  Output dir:   $OutputDir" -ForegroundColor White
 Write-Host ""
 
 Test-PackagingTools
 Test-PackagingFiles -TargetArch $TargetArch
-$cert = Ensure-Certificate
-Build-Release -TargetArch $TargetArch
+Build-Release -TargetArch $TargetArch -ExeName $ExeName
 Stage-PackageLayout -TargetArch $TargetArch -ExeName $ExeName
 
 # read version from manifest
@@ -525,14 +602,14 @@ if (-not $pkgVersion)
 }
 
 $msixPath = New-MsixPackage -ExeName $ExeName -TargetArch $TargetArch -Version $pkgVersion
-if ($cert)
-{
-    Add-PackageSignature -PackagePath $msixPath -CertPath $cert.Path -CertPassword $cert.Password
-}
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "  Packaging complete!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "  $msixPath" -ForegroundColor White
+Write-Host "  App.exe: .build\release\$ExeName.exe" -ForegroundColor White
+Write-Host "  MSIX:    $msixPath" -ForegroundColor White
+Write-Host ""
+Write-Host "  For distribution, sign with your own certificate." -ForegroundColor Cyan
+Write-Host "  See: https://learn.microsoft.com/en-us/windows/msix/package/signing-package-overview" -ForegroundColor White
 Write-Host ""

@@ -22,7 +22,7 @@ final class App: SwiftApplication {
         logo.width = 128
         logo.height = 128
         logo.horizontalAlignment = .center
-        if let pngUrl = Bundle.module.url(forResource: "Picture1", withExtension: "png") {
+        if let pngUrl = Bundle.module.url(forResource: "Picture1", withExtension: "png", subdirectory: "Content") {
             logo.source = BitmapImage(WindowsFoundation.Uri(pngUrl.absoluteString))
         }
         root.children.append(logo)
@@ -49,7 +49,7 @@ final class App: SwiftApplication {
         window.content = root
         try! window.activate()
 
-        if let iconUrl = Bundle.module.url(forResource: "AppIcon", withExtension: "ico") {
+        if let iconUrl = Bundle.module.url(forResource: "app", withExtension: "ico") {
             try? window.appWindow.setTaskbarIcon(iconUrl.path)
             try? window.appWindow.setIcon(iconUrl.path)
         }
