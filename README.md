@@ -45,7 +45,7 @@ The `AppIcon.png` source at `Platform/AppIcon.png` is your single source image �
 ## Quick start
 
 ```powershell
-# 1. Open a Developer PowerShell for VS 2022 (only required for first-time
+# 1. Open a Developer PowerShell for Visual Studio (only required for first-time
 #    swiftwinrt.exe build; subsequent runs don't need it)
 
 # 2. Run the full setup (uses pinned versions from packages.config)
@@ -73,7 +73,7 @@ To install just the Swift/WinRT bindings generator separately:
 
 ### Step 1: Prerequisites (`prerequisites.ps1`)
 
-The script checks for these tools and prompts to install any that are missing via winget:
+The script checks for these tools and offers to install missing ones via winget:
 
 | Tool | Why it's needed |
 |------|----------------|
@@ -83,8 +83,9 @@ The script checks for these tools and prompts to install any that are missing vi
 | **Ninja** | Fast build generator used by CMake |
 | **nuget** | Restores SDK packages from `packages.config` |
 | **winapp** | Generates icon assets, runs resource compiler, packs MSIX |
-| **Swift** | Compiles the final app — download manually from [swift.org](https://swift.org/download/) |
-| **MSVC (cl.exe)** | **Only required if building swift-winrt from source.** Loaded automatically by `install-swiftwinrt.ps1`; if missing, the script prompts to install Visual Studio 2022 with the *Desktop development with C++* workload. |
+| **Swift** | Compiles the final app — installed via winget (`Swift.Toolchain`) or from [swift.org](https://swift.org/download/) |
+| **MSVC (cl.exe)** | **Only required if building swift-winrt from source.** Loaded automatically by `install-swiftwinrt.ps1`; if missing, the script offers winget install of **Visual Studio Build Tools**, then prompts you to add the *MSVC build tools for x64/x86* and *Windows 11 SDK (10.0.26100.0)* components via the Individual Components tab. |
+| **Windows SDK** | C++ headers needed to compile swift-winrt; installed as a component of Visual Studio Build Tools (version **10.0.26100** required — no other version works). |
 
 ### Step 2: Swift/WinRT bindings generator (`install-swiftwinrt.ps1`)
 

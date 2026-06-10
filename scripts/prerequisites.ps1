@@ -25,11 +25,9 @@ function Get-Version
 
 function Install-WithWinget
 {
-    param([string]$PackageId, [string]$DisplayName, [string]$Source)
+    param([scriptblock]$Command, [string]$DisplayName)
     Write-Host "  Installing $DisplayName via winget..." -ForegroundColor DarkGray
-    $args = @("install", "--id", $PackageId, "--exact", "--accept-source-agreements", "--accept-package-agreements")
-    if ($Source) { $args += @("--source", $Source) }
-    winget @args
+    & $Command
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189)
     {
         Write-Host "  Failed to install $DisplayName. Install it manually." -ForegroundColor Red
@@ -68,6 +66,61 @@ function Write-Status
     Write-Host $line -ForegroundColor $color
 }
 
+function Get-WindowsSdkInfo
+{
+    $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10"
+    $manifest = Join-Path $sdkRoot "SDKManifest.xml"
+    if (Test-Path $manifest)
+    {
+        try
+        {
+            [xml]$xml = Get-Content $manifest -ErrorAction Stop
+            if ($xml.SDKManifest.ProductVersion)
+            {
+                return @{ Found = $true; Version = $xml.SDKManifest.ProductVersion }
+            }
+        } catch {}
+    }
+    $includeDir = Join-Path $sdkRoot "Include"
+    if (Test-Path $includeDir)
+    {
+        $versions = Get-ChildItem $includeDir -Directory | Sort-Object Name -Descending -ErrorAction SilentlyContinue
+        if ($versions)
+        {
+            return @{ Found = $true; Version = $versions[0].Name }
+        }
+    }
+    return @{ Found = $false; Version = $null }
+}
+
+function Get-LatestWindowsSdkPackageId
+{
+    try
+    {
+        $output = & winget search "Windows SDK" --accept-source-agreements 2>&1 | Out-String
+        $lines = $output -split "`r`n|`n"
+        $latestBuild = 0
+        $latestId = $null
+        foreach ($line in $lines)
+        {
+            if ($line -match "(Microsoft\.WindowsSDK\.10\.0\.(\d+))")
+            {
+                $id = $matches[1]
+                $build = [int]$matches[2]
+                if ($build -gt $latestBuild)
+                {
+                    $latestBuild = $build
+                    $latestId = $id
+                }
+            }
+        }
+        return $latestId
+    } catch
+    {
+        return $null
+    }
+}
+
 # --- Main ---
 
 Write-Host "Checking prerequisites..." -ForegroundColor Cyan
@@ -98,7 +151,7 @@ if (-not $gitPath)
     $install = Read-Host "  Install Git via winget? (Y/N)"
     if ($install -eq "Y" -or $install -eq "y")
     {
-        Install-WithWinget -PackageId "Git.Git" -DisplayName "Git"
+        Install-WithWinget -Command { winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements } -DisplayName "Git"
         Refresh-Path
         $gitPath = Get-CommandPath "git"
         if ($gitPath)
@@ -129,7 +182,7 @@ if (-not $cmakePath)
     $install = Read-Host "  Install CMake via winget? (Y/N)"
     if ($install -eq "Y" -or $install -eq "y")
     {
-        Install-WithWinget -PackageId "Kitware.CMake" -DisplayName "CMake"
+        Install-WithWinget -Command { winget install -e --id Kitware.CMake --accept-source-agreements --accept-package-agreements } -DisplayName "CMake"
         Refresh-Path
         $cmakePath = Get-CommandPath "cmake"
         if ($cmakePath)
@@ -160,7 +213,7 @@ if (-not $ninjaPath)
     $install = Read-Host "  Install Ninja via winget? (Y/N)"
     if ($install -eq "Y" -or $install -eq "y")
     {
-        Install-WithWinget -PackageId "Ninja-build.Ninja" -DisplayName "Ninja"
+        Install-WithWinget -Command { winget install -e --id Ninja-build.Ninja --accept-source-agreements --accept-package-agreements } -DisplayName "Ninja"
         Refresh-Path
         $ninjaPath = Get-CommandPath "ninja"
         if ($ninjaPath)
@@ -191,7 +244,7 @@ if (-not $winappPath)
     $install = Read-Host "  Install winapp CLI via winget? (Y/N)"
     if ($install -eq "Y" -or $install -eq "y")
     {
-        Install-WithWinget -PackageId "Microsoft.WinAppCli" -DisplayName "winapp CLI" -Source "winget"
+        Install-WithWinget -Command { winget install -e --id Microsoft.winappcli --source winget --accept-source-agreements --accept-package-agreements } -DisplayName "winapp CLI"
         Refresh-Path
         $winappPath = Get-CommandPath "winapp"
         if ($winappPath)
@@ -219,14 +272,29 @@ $nugetPath = Get-CommandPath "nuget"
 if (-not $nugetPath)
 {
     Write-Status "nuget"
-    Write-Host "  nuget.exe is required to restore packages for the development setup." -ForegroundColor Yellow
-    Write-Host "  Install manually from https://www.nuget.org/downloads (add the folder containing nuget.exe to PATH)" -ForegroundColor Yellow
-    Write-Host "  or run scripts\prerequisites.ps1's winapp step which will be needed for packaging anyway." -ForegroundColor DarkGray
-    $allSatisfied = $false
+    $install = Read-Host "  Install NuGet CLI via winget? (Y/N)"
+    if ($install -eq "Y" -or $install -eq "y")
+    {
+        Install-WithWinget -Command { winget install -e --id Microsoft.NuGet --accept-source-agreements --accept-package-agreements } -DisplayName "NuGet CLI"
+        Refresh-Path
+        $nugetPath = Get-CommandPath "nuget"
+        if ($nugetPath)
+        {
+            $nugetFileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($nugetPath).FileVersion
+            $nugetVersion = if ($nugetFileVersion) { "v$nugetFileVersion" } else { "INSTALLED" }
+            Write-Status "nuget" $nugetVersion
+        } else
+        {
+            Write-Status "nuget" -Message "FAILED - Install manually from https://www.nuget.org/downloads"
+            $allSatisfied = $false
+        }
+    } else
+    {
+        Write-Status "nuget" -Message "SKIPPED - Required to restore SDK packages."
+        $allSatisfied = $false
+    }
 } else
 {
-    # nuget 7.x dropped the "NuGet Version:" banner from `nuget help`, so we read
-    # the version from the executable's file metadata.
     $nugetFileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($nugetPath).FileVersion
     $nugetVersion = if ($nugetFileVersion) { "v$nugetFileVersion" } else { "INSTALLED" }
     Write-Status "nuget" $nugetVersion
@@ -237,15 +305,31 @@ $swiftPath = Get-CommandPath "swift"
 if (-not $swiftPath)
 {
     Write-Status "swift"
-    Write-Host "  Swift toolchain is required to build the project." -ForegroundColor Yellow
-    Write-Host "  Manual installation recommended: https://swift.org/download/" -ForegroundColor Yellow
-    $open = Read-Host "  Open the download page in your browser? (Y/N)"
-    if ($open -eq "Y" -or $open -eq "y")
+    $install = Read-Host "  Install Swift toolchain via winget? (Y/N)"
+    if ($install -eq "Y" -or $install -eq "y")
     {
-        Start-Process "https://swift.org/download/"
-        Write-Host "  Download and run the Swift installer, then re-run this script." -ForegroundColor DarkGray
+        Install-WithWinget -Command { winget install --id Swift.Toolchain -e --source winget --accept-source-agreements --accept-package-agreements } -DisplayName "Swift"
+        Refresh-Path
+        $swiftPath = Get-CommandPath "swift"
+        if ($swiftPath)
+        {
+            $swiftVersion = (Get-Version "swift" "--version") -split "`n" | Select-Object -First 1
+            Write-Status "swift" $swiftVersion
+        } else
+        {
+            Write-Status "swift" -Message "FAILED - Swift may need a manual install."
+            Write-Host "  Download from: https://swift.org/download/" -ForegroundColor Yellow
+            $open = Read-Host "  Open the download page in your browser? (Y/N)"
+            if ($open -eq "Y" -or $open -eq "y") { Start-Process "https://swift.org/download/" }
+            $allSatisfied = $false
+        }
+    } else
+    {
+        Write-Host "  Manual installation: https://swift.org/download/" -ForegroundColor Yellow
+        $open = Read-Host "  Open the download page in your browser? (Y/N)"
+        if ($open -eq "Y" -or $open -eq "y") { Start-Process "https://swift.org/download/" }
+        $allSatisfied = $false
     }
-    $allSatisfied = $false
 } else
 {
     $swiftVersion = (Get-Version "swift" "--version") -split "`n" | Select-Object -First 1
@@ -264,7 +348,65 @@ if ($clPath)
     Write-Host "  (required only for building swift-winrt; loaded automatically when needed)" -ForegroundColor DarkGray
 } else
 {
-    Write-Status "MSVC (cl.exe)" -Message "Will be required if you need to build swift-winrt"
+    $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    $vsPath = if (Test-Path $vsWhere) { & $vsWhere -latest -products * -property installationPath -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 2>$null } else { $null }
+    if ($vsPath)
+    {
+        Write-Status "MSVC (cl.exe)" -Message "Installed but not in PATH (the script will load the environment when needed to compile swiftwinrt.exe)"
+    } else
+    {
+        Write-Status "MSVC (cl.exe)"
+        Write-Host "  Visual Studio Build Tools (~3 GB download)." -ForegroundColor Yellow
+        $install = Read-Host "  Install via winget? (Y/N)"
+        if ($install -eq "Y" -or $install -eq "y")
+        {
+            Install-WithWinget -Command { winget install --id=Microsoft.VisualStudio.BuildTools -e --accept-source-agreements --accept-package-agreements } -DisplayName "Visual Studio Build Tools"
+            Write-Host ""
+            Write-Host "  IMPORTANT: After the installer downloads, you must manually:" -ForegroundColor Yellow
+            Write-Host "  1. Open the Visual Studio Installer" -ForegroundColor Yellow
+            Write-Host "  2. Click 'Modify' on the 'Visual Studio Build Tools' entry" -ForegroundColor Yellow
+            Write-Host "  3. Go to the 'Individual Components' tab" -ForegroundColor Yellow
+            Write-Host "  4. Search for and check:" -ForegroundColor Yellow
+            Write-Host "     - MSVC build tools for x64/x86 (latest)" -ForegroundColor Cyan
+            Write-Host "       (pick the one matching your architecture; there is also an ARM64 variant)" -ForegroundColor DarkGray
+            Write-Host '     - Windows 11 SDK (10.0.26100.0)' -ForegroundColor Cyan
+            Write-Host "  5. Tap the 'Install while downloading' button" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  *** Windows 11 SDK 10.0.26100 is REQUIRED by swiftwinrt. ***" -ForegroundColor Red
+            Write-Host "  *** Other versions will NOT work. You must select exactly 10.0.26100. ***" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "  After modifying, open a Developer PowerShell for Visual Studio to use cl.exe." -ForegroundColor DarkGray
+            $allSatisfied = $false
+        } else
+        {
+            Write-Status "MSVC (cl.exe)" -Message "SKIPPED - Only needed for building swift-winrt from source."
+        }
+    }
+}
+
+# --- Windows SDK ---
+# Required for C++ compilation (building swift-winrt) and WinRT metadata headers.
+# The NuGet packages provide .winmd metadata, but the SDK headers/libs are needed
+# to compile native C++ components.
+$sdkInfo = Get-WindowsSdkInfo
+if ($sdkInfo.Found)
+{
+    Write-Status "Windows SDK" $sdkInfo.Version
+} else
+{
+    Write-Status "Windows SDK"
+    Write-Host "  Windows SDK is required for building swift-winrt." -ForegroundColor Yellow
+    Write-Host "  Install it via the Visual Studio Build Tools installer:" -ForegroundColor Yellow
+    Write-Host "  1. If not already installed, install 'Visual Studio Build Tools' via the step above" -ForegroundColor Yellow
+    Write-Host "  2. Open the Visual Studio Installer" -ForegroundColor Yellow
+    Write-Host "  3. Click 'Modify' on 'Visual Studio Build Tools'" -ForegroundColor Yellow
+    Write-Host "  4. Go to the 'Individual Components' tab" -ForegroundColor Yellow
+    Write-Host "  5. Search for and check:" -ForegroundColor Yellow
+    Write-Host '     - Windows 11 SDK (10.0.26100.0)' -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  *** Windows 11 SDK 10.0.26100 is REQUIRED by swiftwinrt. ***" -ForegroundColor Red
+    Write-Host "  *** Other versions will NOT work. You must select exactly 10.0.26100. ***" -ForegroundColor Red
+    $allSatisfied = $false
 }
 
 Write-Host ""
