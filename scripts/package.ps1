@@ -118,10 +118,14 @@ function Get-PackageVersion
     # Reads Platform/packages.config and returns the version for a given package id.
     param([string]$PackageId)
     $configPath = Join-Path $PlatformDir "packages.config"
-    if (-not (Test-Path $configPath)) { return $null }
+    if (-not (Test-Path $configPath))
+    { return $null
+    }
     [xml]$xml = Get-Content -LiteralPath $configPath
     $node = $xml.packages.package | Where-Object { $_.id -eq $PackageId }
-    if ($node) { return $node.version }
+    if ($node)
+    { return $node.version
+    }
     return $null
 }
 
@@ -262,7 +266,7 @@ function Build-Release
     Write-Host "Building release ($TargetArch)..." -ForegroundColor Cyan
     Write-Host ""
 
-    & swift build -c release -Xswiftc -Osize -Xswiftc -g -Xswiftc -gnone -Xlinker -opt:ref -Xlinker -opt:icf
+    & swift build -c release -Xswiftc -Osize
     if ($LASTEXITCODE -ne 0)
     {
         Write-Host "Release build failed with exit code $LASTEXITCODE." -ForegroundColor Red
@@ -383,9 +387,15 @@ function Stage-PackageLayout
         $interactVer   = Get-PackageVersion -PackageId "Microsoft.WindowsAppSDK.InteractiveExperiences"
 
         $frameworkPackages = @()
-        if ($foundationVer) { $frameworkPackages += "Microsoft.WindowsAppSDK.Foundation.$foundationVer" }
-        if ($winuiVer)      { $frameworkPackages += "Microsoft.WindowsAppSDK.WinUI.$winuiVer" }
-        if ($interactVer)   { $frameworkPackages += "Microsoft.WindowsAppSDK.InteractiveExperiences.$interactVer" }
+        if ($foundationVer)
+        { $frameworkPackages += "Microsoft.WindowsAppSDK.Foundation.$foundationVer"
+        }
+        if ($winuiVer)
+        { $frameworkPackages += "Microsoft.WindowsAppSDK.WinUI.$winuiVer"
+        }
+        if ($interactVer)
+        { $frameworkPackages += "Microsoft.WindowsAppSDK.InteractiveExperiences.$interactVer"
+        }
         $frameworkDllCount = 0
         foreach ($pkg in $frameworkPackages)
         {
@@ -429,7 +439,7 @@ function Stage-PackageLayout
         }
 
         # Merge framework activatable class registrations into manifest
-    $stagedManifest = Join-Path $StagingDir $RequiredManifest
+        $stagedManifest = Join-Path $StagingDir $RequiredManifest
         $manifestContent = [System.IO.File]::ReadAllText($stagedManifest)
 
         $fragmentPackages = $frameworkPackages
